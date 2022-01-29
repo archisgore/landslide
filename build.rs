@@ -1,9 +1,6 @@
-// Example custom build script.
-fn main() {
-    // Tell Cargo that if the given file changes, to rerun this build script.
-    println!("cargo:rerun-if-changed=proto/vm.proto");
-    // Use the `cc` crate to build a C file and statically link it.
-    cc::Build::new()
-        .file("src/hello.c")
-        .compile("hello");
+
+// Build the VM's protobuf into a Rust server
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tonic_build::compile_protos("proto/vm.proto")?;
+    Ok(())
 }

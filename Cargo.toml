@@ -1,8 +1,8 @@
 [package]
-name = "grr-plugin"
+name = "landslide"
 version = "0.1.0"
 edition = "2021"
-authors = "Archis Gore <me@archisgore.com>"
+authors = ["Archis Gore <me@archisgore.com>"]
 description = "A Rust template/sample for writing go-plugin compatible plugins."
 readme = "README.md"
 license = "Apache 2.0"
@@ -11,4 +11,9 @@ keywords = ["go-plugin", "golang", "gRPC"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tonic = "0.6.2"
+tonic = "0.6"
+prost = "0.9"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+
+[build-dependencies]
+tonic-build = "0.6"
