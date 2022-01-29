@@ -1,4 +1,3 @@
-# grr-plugin
-A Rust sample for go-plugins written from Rust
+# A rust-based Custom VM for Avalanche Subnets
 
-Ever find yourself interfacing with a go host program, but want to write a that meets the [go-plugin](https://github.com/hashicorp/go-plugin) spec from Rust? This is a sample tempalte to fork/use.
+Curious about how to run Rust-based smart contracts, or just custom VMs for [Avalanche blockchain](https://www.avax.network/)? You're in the right place.
