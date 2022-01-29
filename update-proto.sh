@@ -8,7 +8,7 @@ function vmproto() {
     remote_path="https://raw.githubusercontent.com/ava-labs/avalanchego/master/vms/rpcchainvm/vmproto/"
     local_path="./proto/"
     echo "Updating the VM protobuf definition from upstream Avalanche Repo: $remote_path"
-    wget ${remote_path}${proto_filename} -O ${local_path}${proto_filename} 
+    wget ${remote_path}${proto_filename} -O ${local_path}${proto_filename}
 }
 
 function prometheusproto() {
