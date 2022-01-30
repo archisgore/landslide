@@ -27,14 +27,14 @@ impl Id {
 
     // Bit returns the bit value at the ith index of the byte array. Returns 0 or 1
     pub fn bit(&self, i: usize) -> bool {
-        let byteIndex = i / BITS_PER_BYTE;
-        let bitIndex = i % BITS_PER_BYTE;
+        let byte_index = i / BITS_PER_BYTE;
+        let bit_index = i % BITS_PER_BYTE;
 
-        let b = self.0[byteIndex];
+        let b = self.0[byte_index];
 
         // b = [7, 6, 5, 4, 3, 2, 1, 0]
 
-        let b = b >> bitIndex;
+        let b = b >> bit_index;
 
         // b = [0, ..., bitIndex + 1, bitIndex]
         // 1 = [0, 0, 0, 0, 0, 0, 0, 1]

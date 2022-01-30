@@ -80,7 +80,7 @@ impl State {
     }
 
     pub async fn flush(&self) -> Result<(), LandslideError> {
-        self.block_db.flush_async().await;
+        self.block_db.flush_async().await?;
         Ok(())
     }
 

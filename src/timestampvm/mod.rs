@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 macro_rules! mutable_interior {
     ($self:ident, $interior:ident) => {
         let mut interior_write_guard = $self.interior.write().await;
-        let mut $interior = interior_write_guard.deref_mut();
+        let $interior = interior_write_guard.deref_mut();
     };
 }
 
@@ -41,9 +41,6 @@ macro_rules! err_status {
 }
 
 const BLOCK_DATA_LEN: usize = 32;
-
-const SINGLETON_STATE_PREFIX: &str = "singleton";
-const BLOCK_STATE_PREFIX: &str = "block";
 
 // TimestampVM cannot mutably reference self on all its trait methods.
 // Instead it stores an instance of TimestampVmInterior, which is mutable, and can be
@@ -110,7 +107,17 @@ impl Vm for TimestampVm {
         };
 
         let ir = request.into_inner();
-        interior.ctx = Some(Context::from(ir));
+        interior.ctx = Some(Context{
+            network_id: ir.network_id,
+            subnet_id: ir.subnet_id,
+            chain_id: ir.chain_id,
+            node_id: ir.node_id,
+
+            x_chain_id: ir.x_chain_id,
+            avax_asset_id: ir.avax_asset_id,
+        });
+
+        self.init_genessis(ir.genesis_bytes.as_ref()).await?;
 
         Err(Status::ok("Initialized Timestamp VM"))
     }
