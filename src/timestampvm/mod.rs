@@ -4,9 +4,9 @@ mod block;
 
 use super::context::Context;
 use super::vm::*;
-use semver::Version;
-use block::State;
 use crate::error::LandslideError;
+use block::State;
+use semver::Version;
 
 use std::ops::{Deref, DerefMut};
 use tokio::sync::RwLock;
@@ -30,8 +30,13 @@ macro_rules! err_status {
     ($e:expr, $m:expr) => {
         match $e {
             Ok(si) => si,
-            Err(err) => return Err(Status::unknown(format!("Unknown error when {}: {:?}", $m, err))),
-        }   
+            Err(err) => {
+                return Err(Status::unknown(format!(
+                    "Unknown error when {}: {:?}",
+                    $m, err
+                )))
+            }
+        }
     };
 }
 
@@ -57,12 +62,11 @@ pub struct TimestampVm {
 
 impl TimestampVm {
     pub fn new() -> Result<TimestampVm, LandslideError> {
-
         Ok(TimestampVm {
             interior: RwLock::new(TimestampVmInterior {
                 ctx: None,
                 version: Version::new(0, 1, 0),
-                state: State::new(sled::open("block_store")?)
+                state: State::new(sled::open("block_store")?),
             }),
         })
     }
@@ -70,15 +74,21 @@ impl TimestampVm {
     async fn init_genessis(&self, genesis_bytes: &[u8]) -> Result<(), Status> {
         mutable_interior!(self, interior);
 
-        if err_status!(interior.state.is_state_initialized(), "checking whether state is initialized") {
-            return Ok(())
+        if err_status!(
+            interior.state.is_state_initialized(),
+            "checking whether state is initialized"
+        ) {
+            return Ok(());
         }
 
         if genesis_bytes.len() != BLOCK_DATA_LEN {
-            return Err(Status::unknown(format!("Genesis data byte length {} mismatches the expected block byte length of {}", genesis_bytes.len(), BLOCK_DATA_LEN)))
+            return Err(Status::unknown(format!(
+                "Genesis data byte length {} mismatches the expected block byte length of {}",
+                genesis_bytes.len(),
+                BLOCK_DATA_LEN
+            )));
         }
 
-        
         Ok(())
     }
 }
@@ -93,7 +103,10 @@ impl Vm for TimestampVm {
 
         let _version = match self.version(Request::new(())).await {
             Ok(v) => v,
-            Err(e) => return Err(Status::unknown(format!("Unable to initialize the Timestamp VM. Unable to fetch self version. Error: {:?}", e))),
+            Err(e) => return Err(Status::unknown(format!(
+                "Unable to initialize the Timestamp VM. Unable to fetch self version. Error: {:?}",
+                e
+            ))),
         };
 
         let ir = request.into_inner();
@@ -168,7 +181,9 @@ impl Vm for TimestampVm {
     }
 
     async fn health(&self, _request: Request<()>) -> Result<Response<HealthResponse>, Status> {
-        Ok(Response::new(HealthResponse{details: "All is well.".to_string()}))
+        Ok(Response::new(HealthResponse {
+            details: "All is well.".to_string(),
+        }))
     }
 
     async fn version(&self, _request: Request<()>) -> Result<Response<VersionResponse>, Status> {

@@ -19,7 +19,11 @@ impl Display for LandslideError {
             ),
             Self::SledError(e) => write!(f, "An error occurred in the Sled database: {:?}", e),
             Self::FromHexError(e) => write!(f, "Unable to parse bytes from hexadecimal: {:?}", e),
-            Self::SerdeJsonError(e) => write!(f, "An error occurred when serializing/deserializing JSON: {:?}", e),
+            Self::SerdeJsonError(e) => write!(
+                f,
+                "An error occurred when serializing/deserializing JSON: {:?}",
+                e
+            ),
             Self::Generic(s) => write!(f, "{}", s),
         }
     }

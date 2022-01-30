@@ -1,11 +1,10 @@
-
-use serde::{Serialize, Deserialize};
-use hmac_sha256::Hash;
 use super::error::LandslideError;
+use hex::ToHex;
+use hmac_sha256::Hash;
+use serde::{Deserialize, Serialize};
+use std::convert::TryInto;
 use std::str::FromStr;
 use std::string::ToString;
-use hex::ToHex;
-use std::convert::TryInto;
 use zerocopy::{AsBytes, FromBytes, Unaligned};
 
 #[derive(Serialize, Deserialize, AsBytes, FromBytes, Unaligned)]
@@ -26,8 +25,8 @@ impl Id {
         Ok(Id(Hash::hash(bytes)))
     }
 
-       // Bit returns the bit value at the ith index of the byte array. Returns 0 or 1
-       pub fn bit(&self, i: usize) -> bool {
+    // Bit returns the bit value at the ith index of the byte array. Returns 0 or 1
+    pub fn bit(&self, i: usize) -> bool {
         let byteIndex = i / BITS_PER_BYTE;
         let bitIndex = i % BITS_PER_BYTE;
 
@@ -49,7 +48,6 @@ impl Id {
             _ => true,
         }
     }
-
 }
 
 impl FromStr for Id {
@@ -58,10 +56,15 @@ impl FromStr for Id {
     // from_string is the inverse of ID.to_string()
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = hex::decode(s)?;
-        
+
         let newid: [u8; 32] = match bytes.try_into() {
             Ok(n) => n,
-            Err(e) => return Err(LandslideError::Generic(format!("Deserializing ID from string {}, resulted in {} bytes, when we expected exactly 32.", s, bytes.len())))
+            Err(err) => {
+                return Err(LandslideError::Generic(format!(
+                    "Error when deserializing ID from string {}. Error: {:?}",
+                    s, err
+                )))
+            }
         };
 
         Ok(Id(newid))
@@ -73,5 +76,3 @@ impl ToString for Id {
         self.0.encode_hex()
     }
 }
-
-
