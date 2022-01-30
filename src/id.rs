@@ -6,8 +6,10 @@ use std::str::FromStr;
 use std::string::ToString;
 use hex::ToHex;
 use std::convert::TryInto;
+use zerocopy::{AsBytes, FromBytes, Unaligned};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, AsBytes, FromBytes, Unaligned)]
+#[repr(transparent)]
 pub struct Id([u8; 32]);
 
 impl AsRef<[u8]> for Id {

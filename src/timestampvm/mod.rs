@@ -1,12 +1,12 @@
 //NOTE: I really don't understand protobufs. This code is clunky and I appreciate fixes/PRs.
 // I've had a distaste for RPC since CORBA and SOAP didn't make it better.
-mod state;
 mod block;
 
 use super::context::Context;
 use super::vm::*;
 use semver::Version;
-use sled::Db;
+use block::State;
+use crate::error::LandslideError;
 
 use std::ops::{Deref, DerefMut};
 use tokio::sync::RwLock;
@@ -26,6 +26,17 @@ macro_rules! immutable_interior {
     };
 }
 
+macro_rules! err_status {
+    ($e:expr, $m:expr) => {
+        match $e {
+            Ok(si) => si,
+            Err(err) => return Err(Status::unknown(format!("Unknown error when {}: {:?}", $m, err))),
+        }   
+    };
+}
+
+const BLOCK_DATA_LEN: usize = 32;
+
 const SINGLETON_STATE_PREFIX: &str = "singleton";
 const BLOCK_STATE_PREFIX: &str = "block";
 
@@ -36,7 +47,7 @@ const BLOCK_STATE_PREFIX: &str = "block";
 struct TimestampVmInterior {
     ctx: Option<Context>,
     version: Version,
-    state: Option<State>,
+    state: State,
 }
 
 #[derive(Debug)]
@@ -45,17 +56,29 @@ pub struct TimestampVm {
 }
 
 impl TimestampVm {
-    pub fn new() -> TimestampVm {
-        TimestampVm {
+    pub fn new() -> Result<TimestampVm, LandslideError> {
+
+        Ok(TimestampVm {
             interior: RwLock::new(TimestampVmInterior {
                 ctx: None,
                 version: Version::new(0, 1, 0),
+                state: State::new(sled::open("block_store")?)
             }),
-        }
+        })
     }
 
-    fn init_genessis(_genesis_bytes: &[u8]) -> Result<(), Status> {
+    async fn init_genessis(&self, genesis_bytes: &[u8]) -> Result<(), Status> {
+        mutable_interior!(self, interior);
 
+        if err_status!(interior.state.is_state_initialized(), "checking whether state is initialized") {
+            return Ok(())
+        }
+
+        if genesis_bytes.len() != BLOCK_DATA_LEN {
+            return Err(Status::unknown(format!("Genesis data byte length {} mismatches the expected block byte length of {}", genesis_bytes.len(), BLOCK_DATA_LEN)))
+        }
+
+        
         Ok(())
     }
 }
@@ -145,7 +168,7 @@ impl Vm for TimestampVm {
     }
 
     async fn health(&self, _request: Request<()>) -> Result<Response<HealthResponse>, Status> {
-        todo!()
+        Ok(Response::new(HealthResponse{details: "All is well.".to_string()}))
     }
 
     async fn version(&self, _request: Request<()>) -> Result<Response<VersionResponse>, Status> {

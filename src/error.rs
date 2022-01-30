@@ -41,6 +41,6 @@ impl From<hex::FromHexError> for LandslideError {
 
 impl From<serde_json::Error> for LandslideError {
     fn from(err: serde_json::Error) -> Self {
-        Self::SerdeJsonError(e)
+        Self::SerdeJsonError(err)
     }
 }
