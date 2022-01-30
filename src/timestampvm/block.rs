@@ -19,7 +19,7 @@ const STATE_INITIALIZED_VALUE: &[u8] = b"state_has_infact_been_initialized";
 pub struct Block {
     pub parent_id: Id,
     pub height: u64,
-    pub timestamp: i64,
+    pub timestamp: Vec<u8>,
     pub data: Vec<u8>,
 }
 
@@ -84,7 +84,7 @@ impl State {
         Ok(())
     }
 
-    pub fn get_block(&self, block_id: Id) -> Result<Option<StorageBlock>, LandslideError> {
+    pub fn get_block(&self, block_id: &Id) -> Result<Option<StorageBlock>, LandslideError> {
         let maybe_storage_block_bytes = self.block_db.get(block_id)?;
 
         let storage_block_bytes = match maybe_storage_block_bytes {
@@ -103,7 +103,7 @@ impl State {
         Ok(())
     }
 
-    pub fn delete_block(&self, block_id: Id) -> Result<(), LandslideError> {
+    pub fn delete_block(&self, block_id: &Id) -> Result<(), LandslideError> {
         self.block_db.remove(block_id)?;
         Ok(())
     }
@@ -117,7 +117,7 @@ impl State {
         )
     }
 
-    pub fn set_last_accepted_block_id(&self, id: Id) -> Result<(), LandslideError> {
+    pub fn set_last_accepted_block_id(&self, id: &Id) -> Result<(), LandslideError> {
         self.block_db
             .insert(LAST_ACCEPTED_BLOCK_ID_KEY, id.as_ref())?;
 

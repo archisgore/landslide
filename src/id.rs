@@ -4,8 +4,10 @@ use hmac_sha256::Hash;
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::str::FromStr;
-use std::string::ToString;
 use zerocopy::{AsBytes, FromBytes, Unaligned};
+use std::fmt::{Display, Formatter, Result as FmtResult};
+
+pub const ZERO_ID: Id = Id([0; 32]);
 
 #[derive(Serialize, Deserialize, AsBytes, FromBytes, Unaligned)]
 #[repr(transparent)]
@@ -71,8 +73,8 @@ impl FromStr for Id {
     }
 }
 
-impl ToString for Id {
-    fn to_string(&self) -> std::string::String {
-        self.0.encode_hex()
+impl Display for Id {
+    fn fmt(&self, w: &mut Formatter) -> FmtResult {
+        write!(w, "{}", self.0.encode_hex::<String>())
     }
 }

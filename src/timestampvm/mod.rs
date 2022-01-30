@@ -2,10 +2,12 @@
 // I've had a distaste for RPC since CORBA and SOAP didn't make it better.
 mod block;
 
+use crate::error::LandslideError;
+
 use super::context::Context;
 use super::vm::*;
-use crate::error::LandslideError;
-use block::State;
+
+use block::{State, StorageBlock};
 use semver::Version;
 
 use std::ops::{Deref, DerefMut};
@@ -96,6 +98,9 @@ impl Vm for TimestampVm {
         &self,
         request: Request<InitializeRequest>,
     ) -> Result<Response<InitializeResponse>, Status> {
+        eprintln!("======================================================== Initializing TimestampVM!!!! Wohoo!!!");
+        println!("======================================================== Initializing TimestampVM!!!! Wohoo!!!");
+
         mutable_interior!(self, interior);
 
         let _version = match self.version(Request::new(())).await {
@@ -119,7 +124,25 @@ impl Vm for TimestampVm {
 
         self.init_genessis(ir.genesis_bytes.as_ref()).await?;
 
-        Err(Status::ok("Initialized Timestamp VM"))
+        let labid = match err_status!(interior.state.get_last_accepted_block_id(), "obtaining last accepted block id") {
+            Some(l) => l,
+            None => return Err(Status::unknown("No last accepted block id found. This was not expected.")),
+        };
+
+        let sb = match err_status!(interior.state.get_block(&labid), format!("getting last accepted block from id {}", labid)) {
+            Some(sb) => sb,
+            None => return Err(Status::unknown(format!("No block found for id {}. This was not expected.", labid))),
+        };
+        
+
+        Ok(Response::new(InitializeResponse{
+            last_accepted_id: Vec::from(labid.as_ref()),
+            last_accepted_parent_id: Vec::from(sb.block.parent_id.as_ref()),
+            bytes: sb.block.data,
+            height: sb.block.height,
+            timestamp: sb.block.timestamp,
+            status: sb.status as u32,
+        }))
     }
 
     async fn bootstrapping(&self, _request: Request<()>) -> Result<Response<()>, Status> {

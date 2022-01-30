@@ -16,7 +16,7 @@ use vm::{Server, VmServer};
 // The constants are for generating the go-plugin string
 // https://github.com/hashicorp/go-plugin/blob/master/docs/guide-plugin-write-non-go.md
 const GRPC_CORE_PROTOCOL_VERSION: usize = 1;
-const GRPC_APP_PROTOCOL_VERSION: usize = 1;
+const GRPC_APP_PROTOCOL_VERSION: usize = 9;
 
 const IPV6_LOCALHOST: &str = "[::1]";
 
