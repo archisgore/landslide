@@ -1,6 +1,7 @@
 // Common modules required by any VM
 pub mod context;
 pub mod error;
+pub mod id;
 pub mod vm;
 
 // timestamp VM
@@ -15,7 +16,7 @@ use vm::{Server, VmServer};
 // The constants are for generating the go-plugin string
 // https://github.com/hashicorp/go-plugin/blob/master/docs/guide-plugin-write-non-go.md
 const GRPC_CORE_PROTOCOL_VERSION: usize = 1;
-const GRPC_APP_PROTOCOL_VERSION: usize = 1;
+const GRPC_APP_PROTOCOL_VERSION: usize = 9;
 
 const IPV6_LOCALHOST: &str = "[::1]";
 
@@ -33,7 +34,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let addrstr = format!("{}:{}", IPV6_LOCALHOST, port);
     let addr = addrstr.parse()?;
-    let vm = TimestampVm::new();
+
+    let vm = TimestampVm::new()?;
 
     println!(
         "{}|{}|tcp|{}:{}|grpc",

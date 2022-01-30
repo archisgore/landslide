@@ -22,5 +22,5 @@ Run standard `cargo build`.
 2. Clone https://github.com/ava-labs/ava-sim and go in the directory.
 3. In ava-sim root, run:
 ```.bash
-./scripts/run.sh $LANDSLIDE_BIN_PATH "$LANDSLIDE_GIT_ROOT/genesis"
+./scripts/run.sh $LANDSLIDE_BIN_PATH "$LANDSLIDE_GIT_ROOT/genesis.json"
 ```
