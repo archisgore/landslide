@@ -12,9 +12,6 @@ pub mod io {
     }
 }
 
-// Allow others to use these types
-pub use tonic::{transport::Server, Request, Response, Status};
-
 pub use vm_proto::vm_server::{Vm, VmServer};
 pub use vm_proto::{
     AppGossipMsg, AppRequestFailedMsg, AppRequestMsg, AppResponseMsg, BatchedParseBlockRequest,
