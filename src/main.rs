@@ -1,184 +1,43 @@
-use tonic::{transport::Server, Request, Response, Status};
 
-//NOTE: I really don't understand protobufs. This code is clunky and I appreciate fixes/PRs.
-// I've had a distaste for RPC since CORBA and SOAP didn't make it better.
+mod landslide;
+mod error;
 
-// This is pulled from vm.proto
-pub mod vm_proto {
-    tonic::include_proto!("vmproto");
-}
+use std::error::Error;
+use landslide::{Landslide, VmServer, Server};
+use portpicker;
+use error::LandslideError;
 
-// This is pulled from metrics.proto
-pub mod io {
-    pub mod prometheus {
-        pub mod client {
-            tonic::include_proto!("io.prometheus.client");
-        }
-    }
-}
+// The constants are for generating the go-plugin string
+// https://github.com/hashicorp/go-plugin/blob/master/docs/guide-plugin-write-non-go.md
+const GRPC_CORE_PROTOCOL_VERSION: usize = 1;
+const GRPC_APP_PROTOCOL_VERSION: usize = 1;
 
-use vm_proto::vm_server::{Vm, VmServer};
-use vm_proto::{
-    AppGossipMsg, AppRequestFailedMsg, AppRequestMsg, AppResponseMsg, BatchedParseBlockRequest,
-    BatchedParseBlockResponse, BlockAcceptRequest, BlockRejectRequest, BlockVerifyRequest,
-    BlockVerifyResponse, BuildBlockResponse, ConnectedRequest, CreateHandlersResponse,
-    CreateStaticHandlersResponse, DisconnectedRequest, GatherResponse, GetAncestorsRequest,
-    GetAncestorsResponse, GetBlockRequest, GetBlockResponse, HealthResponse, InitializeRequest,
-    InitializeResponse, ParseBlockRequest, ParseBlockResponse, SetPreferenceRequest,
-    VersionResponse,
-};
+const IPV6_LOCALHOST: &str = "[::1]";
 
-#[derive(Debug, Default)]
-pub struct Landslide {}
-
-#[tonic::async_trait]
-impl Vm for Landslide {
-    async fn initialize(
-        &self,
-        request: Request<InitializeRequest>,
-    ) -> Result<Response<InitializeResponse>, Status> {
-        todo!()
-    }
-
-    async fn bootstrapping(&self, request: Request<()>) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn bootstrapped(&self, request: Request<()>) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn shutdown(&self, request: Request<()>) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn create_handlers(
-        &self,
-        request: Request<()>,
-    ) -> Result<Response<CreateHandlersResponse>, Status> {
-        todo!()
-    }
-
-    async fn create_static_handlers(
-        &self,
-        request: Request<()>,
-    ) -> Result<Response<CreateStaticHandlersResponse>, Status> {
-        todo!()
-    }
-
-    async fn connected(&self, request: Request<ConnectedRequest>) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn disconnected(
-        &self,
-        request: Request<DisconnectedRequest>,
-    ) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn build_block(
-        &self,
-        request: Request<()>,
-    ) -> Result<Response<BuildBlockResponse>, Status> {
-        todo!()
-    }
-
-    async fn parse_block(
-        &self,
-        request: Request<ParseBlockRequest>,
-    ) -> Result<Response<ParseBlockResponse>, Status> {
-        todo!()
-    }
-
-    async fn get_block(
-        &self,
-        request: Request<GetBlockRequest>,
-    ) -> Result<Response<GetBlockResponse>, Status> {
-        todo!()
-    }
-
-    async fn set_preference(
-        &self,
-        request: Request<SetPreferenceRequest>,
-    ) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn health(&self, request: Request<()>) -> Result<Response<HealthResponse>, Status> {
-        todo!()
-    }
-
-    async fn version(&self, request: Request<()>) -> Result<Response<VersionResponse>, Status> {
-        todo!()
-    }
-
-    async fn app_request(&self, request: Request<AppRequestMsg>) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn app_request_failed(
-        &self,
-        request: Request<AppRequestFailedMsg>,
-    ) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn app_response(&self, request: Request<AppResponseMsg>) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn app_gossip(&self, request: Request<AppGossipMsg>) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn gather(&self, request: Request<()>) -> Result<Response<GatherResponse>, Status> {
-        todo!()
-    }
-
-    async fn block_verify(
-        &self,
-        request: Request<BlockVerifyRequest>,
-    ) -> Result<Response<BlockVerifyResponse>, Status> {
-        todo!()
-    }
-
-    async fn block_accept(
-        &self,
-        request: Request<BlockAcceptRequest>,
-    ) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn block_reject(
-        &self,
-        request: Request<BlockRejectRequest>,
-    ) -> Result<Response<()>, Status> {
-        todo!()
-    }
-
-    async fn get_ancestors(
-        &self,
-        request: Request<GetAncestorsRequest>,
-    ) -> Result<Response<GetAncestorsResponse>, Status> {
-        todo!()
-    }
-
-    async fn batched_parse_block(
-        &self,
-        request: Request<BatchedParseBlockRequest>,
-    ) -> Result<Response<BatchedParseBlockResponse>, Status> {
-        todo!()
-    }
-}
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "[::1]:50051".parse()?;
-    let greeter = Landslide::default();
+async fn main() -> Result<(), Box<dyn Error>> {
+    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_serving::<VmServer<Landslide>>()
+        .await;
+
+    health_reporter.set_serving::<VmServer<Landslide>>().await;
+
+    let port = match portpicker::pick_unused_port() {
+        Some(port) => port,
+        None => return Err(Box::new(LandslideError::NoTCPPortAvailable) as Box<dyn Error>),
+    };
+
+    let addrstr = format!("{}:{}", IPV6_LOCALHOST, port);
+    let addr = addrstr.parse()?;
+    let vm = Landslide::default();
+
+    println!("{}|{}|{}|{}:{}|{}", GRPC_CORE_PROTOCOL_VERSION, GRPC_APP_PROTOCOL_VERSION, "tcp", IPV6_LOCALHOST, port, "grpc");
 
     Server::builder()
-        .add_service(VmServer::new(greeter))
+        .add_service(health_service)
+        .add_service(VmServer::new(vm))
         .serve(addr)
         .await?;
 
