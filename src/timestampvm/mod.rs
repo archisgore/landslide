@@ -1,43 +1,33 @@
 //NOTE: I really don't understand protobufs. This code is clunky and I appreciate fixes/PRs.
 // I've had a distaste for RPC since CORBA and SOAP didn't make it better.
+mod state;
+mod block;
 
 use super::context::Context;
 use super::vm::*;
 use semver::Version;
+use sled::Db;
 
 use std::ops::{Deref, DerefMut};
-use std::sync::RwLock;
+use tokio::sync::RwLock;
 
 // DRY on accessing a mutable reference to interior state
 macro_rules! mutable_interior {
     ($self:ident, $interior:ident) => {
-        let mut interior_write_guard = match $self.interior.write() {
-            Ok(i) => i,
-            Err(e) => {
-                return Err(Status::aborted(format!(
-                    "Unable to obtain write lock on interior mutability. Error: {:?}",
-                    e
-                )))
-            }
-        };
+        let mut interior_write_guard = $self.interior.write().await;
         let mut $interior = interior_write_guard.deref_mut();
     };
 }
 
 macro_rules! immutable_interior {
     ($self:ident, $interior:ident) => {
-        let interior_write_guard = match $self.interior.read() {
-            Ok(i) => i,
-            Err(e) => {
-                return Err(Status::aborted(format!(
-                    "Unable to obtain read lock on interior mutability. Error: {:?}",
-                    e
-                )))
-            }
-        };
-        let $interior = interior_write_guard.deref();
+        let interior_read_guard = $self.interior.read().await;
+        let $interior = interior_read_guard.deref();
     };
 }
+
+const SINGLETON_STATE_PREFIX: &str = "singleton";
+const BLOCK_STATE_PREFIX: &str = "block";
 
 // TimestampVM cannot mutably reference self on all its trait methods.
 // Instead it stores an instance of TimestampVmInterior, which is mutable, and can be
@@ -46,6 +36,7 @@ macro_rules! immutable_interior {
 struct TimestampVmInterior {
     ctx: Option<Context>,
     version: Version,
+    state: Option<State>,
 }
 
 #[derive(Debug)]
@@ -62,6 +53,11 @@ impl TimestampVm {
             }),
         }
     }
+
+    fn init_genessis(_genesis_bytes: &[u8]) -> Result<(), Status> {
+
+        Ok(())
+    }
 }
 
 #[tonic::async_trait]
@@ -71,6 +67,11 @@ impl Vm for TimestampVm {
         request: Request<InitializeRequest>,
     ) -> Result<Response<InitializeResponse>, Status> {
         mutable_interior!(self, interior);
+
+        let _version = match self.version(Request::new(())).await {
+            Ok(v) => v,
+            Err(e) => return Err(Status::unknown(format!("Unable to initialize the Timestamp VM. Unable to fetch self version. Error: {:?}", e))),
+        };
 
         let ir = request.into_inner();
         interior.ctx = Some(Context::from(ir));

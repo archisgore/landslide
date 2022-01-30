@@ -2,6 +2,7 @@
 pub mod context;
 pub mod error;
 pub mod vm;
+pub mod id;
 
 // timestamp VM
 mod timestampvm;
@@ -33,6 +34,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let addrstr = format!("{}:{}", IPV6_LOCALHOST, port);
     let addr = addrstr.parse()?;
+
     let vm = TimestampVm::new();
 
     println!(
