@@ -66,7 +66,7 @@ impl TimestampVm {
         Ok(TimestampVm {
             interior: RwLock::new(TimestampVmInterior {
                 ctx: None,
-                version: Version::new(0, 1, 0),
+                version: Version::new(1, 2, 1),
                 state: State::new(sled::open("block_store")?),
             }),
         })
@@ -267,6 +267,9 @@ impl Vm for TimestampVm {
     async fn version(&self, _request: Request<()>) -> Result<Response<VersionResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         immutable_interior!(self, interior);
+
+        let version = interior.version.to_string();
+        log::info!("{}, ({},{}) - responding with version {}", function!(), file!(), line!(), version);
         Ok(Response::new(VersionResponse {
             version: interior.version.to_string(),
         }))
