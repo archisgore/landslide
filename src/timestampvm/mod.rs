@@ -3,11 +3,13 @@
 mod block;
 
 use crate::error::LandslideError;
+use crate::function;
 
 use super::context::Context;
 use super::vm::*;
+use tonic::{Request, Response, Status};
 
-use block::{State, StorageBlock};
+use block::State;
 use semver::Version;
 
 use std::ops::{Deref, DerefMut};
@@ -98,21 +100,24 @@ impl Vm for TimestampVm {
         &self,
         request: Request<InitializeRequest>,
     ) -> Result<Response<InitializeResponse>, Status> {
-        eprintln!("======================================================== Initializing TimestampVM!!!! Wohoo!!!");
-        println!("======================================================== Initializing TimestampVM!!!! Wohoo!!!");
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
 
         mutable_interior!(self, interior);
 
-        let _version = match self.version(Request::new(())).await {
+        let version = match self.version(Request::new(())).await {
             Ok(v) => v,
-            Err(e) => return Err(Status::unknown(format!(
+            Err(e) => {
+                return Err(Status::unknown(format!(
                 "Unable to initialize the Timestamp VM. Unable to fetch self version. Error: {:?}",
                 e
-            ))),
+            )))
+            }
         };
 
+        log::info!("TimestampVm::Initialize obtained VM version: {:?}", version);
+
         let ir = request.into_inner();
-        interior.ctx = Some(Context{
+        interior.ctx = Some(Context {
             network_id: ir.network_id,
             subnet_id: ir.subnet_id,
             chain_id: ir.chain_id,
@@ -122,38 +127,71 @@ impl Vm for TimestampVm {
             avax_asset_id: ir.avax_asset_id,
         });
 
+        log::info!("TimestampVm::Initialize setup context from genesis data");
+
         self.init_genessis(ir.genesis_bytes.as_ref()).await?;
 
-        let labid = match err_status!(interior.state.get_last_accepted_block_id(), "obtaining last accepted block id") {
+        log::info!("TimestampVm::Initialize genesis initialized");
+
+        let labid = match err_status!(
+            interior.state.get_last_accepted_block_id(),
+            "obtaining last accepted block id"
+        ) {
             Some(l) => l,
-            None => return Err(Status::unknown("No last accepted block id found. This was not expected.")),
+            None => {
+                return Err(Status::unknown(
+                    "No last accepted block id found. This was not expected.",
+                ))
+            }
         };
 
-        let sb = match err_status!(interior.state.get_block(&labid), format!("getting last accepted block from id {}", labid)) {
+        log::info!(
+            "TimestampVm::Initialize obtained last accepted block id: {}",
+            labid
+        );
+
+        let sb = match err_status!(
+            interior.state.get_block(&labid),
+            format!("getting last accepted block from id {}", labid)
+        ) {
             Some(sb) => sb,
-            None => return Err(Status::unknown(format!("No block found for id {}. This was not expected.", labid))),
+            None => {
+                return Err(Status::unknown(format!(
+                    "No block found for id {}. This was not expected.",
+                    labid
+                )))
+            }
         };
-        
 
-        Ok(Response::new(InitializeResponse{
+        let u32status = sb.status as u32;
+
+        log::info!(
+            "TimestampVm::Initialize obtained last accepted block with status: {}",
+            u32status
+        );
+
+        Ok(Response::new(InitializeResponse {
             last_accepted_id: Vec::from(labid.as_ref()),
             last_accepted_parent_id: Vec::from(sb.block.parent_id.as_ref()),
             bytes: sb.block.data,
             height: sb.block.height,
             timestamp: sb.block.timestamp,
-            status: sb.status as u32,
+            status: u32status,
         }))
     }
 
     async fn bootstrapping(&self, _request: Request<()>) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
     async fn bootstrapped(&self, _request: Request<()>) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
     async fn shutdown(&self, _request: Request<()>) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -161,6 +199,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<CreateHandlersResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -168,10 +207,12 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<CreateStaticHandlersResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
     async fn connected(&self, _request: Request<ConnectedRequest>) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -179,6 +220,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<DisconnectedRequest>,
     ) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -186,6 +228,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<BuildBlockResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -193,6 +236,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<ParseBlockRequest>,
     ) -> Result<Response<ParseBlockResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -200,6 +244,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<GetBlockRequest>,
     ) -> Result<Response<GetBlockResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -207,16 +252,20 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<SetPreferenceRequest>,
     ) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
     async fn health(&self, _request: Request<()>) -> Result<Response<HealthResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("TimestampVM: Health endpoint pinged; reporting healthy...");
         Ok(Response::new(HealthResponse {
             details: "All is well.".to_string(),
         }))
     }
 
     async fn version(&self, _request: Request<()>) -> Result<Response<VersionResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         immutable_interior!(self, interior);
         Ok(Response::new(VersionResponse {
             version: interior.version.to_string(),
@@ -224,6 +273,7 @@ impl Vm for TimestampVm {
     }
 
     async fn app_request(&self, _request: Request<AppRequestMsg>) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -231,6 +281,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<AppRequestFailedMsg>,
     ) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -238,14 +289,17 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<AppResponseMsg>,
     ) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
     async fn app_gossip(&self, _request: Request<AppGossipMsg>) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
     async fn gather(&self, _request: Request<()>) -> Result<Response<GatherResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -253,6 +307,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BlockVerifyRequest>,
     ) -> Result<Response<BlockVerifyResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -260,6 +315,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BlockAcceptRequest>,
     ) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -267,6 +323,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BlockRejectRequest>,
     ) -> Result<Response<()>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -274,6 +331,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<GetAncestorsRequest>,
     ) -> Result<Response<GetAncestorsResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 
@@ -281,6 +339,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BatchedParseBlockRequest>,
     ) -> Result<Response<BatchedParseBlockResponse>, Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         todo!()
     }
 }

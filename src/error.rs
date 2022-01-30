@@ -4,10 +4,39 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 #[derive(Debug)]
 pub enum LandslideError {
     NoTCPPortAvailable,
+    GRPCHandshakeMagicCookieValueMismatch,
     SledError(sled::Error),
     FromHexError(hex::FromHexError),
     SerdeJsonError(serde_json::Error),
+    StdIoError(std::io::Error),
+    SetLoggerError(log::SetLoggerError),
     Generic(String),
+    TonicTransportError(tonic::transport::Error),
+}
+
+#[macro_export]
+macro_rules! log_then_bubble_error {
+    ($e:expr) => {
+        match $e {
+            Err(err) => {
+                log::error!("{},({}:{}), {:?}", function!(), file!(), line!(), err);
+                return Err(err.into());
+            }
+            Ok(o) => o,
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! function {
+    () => {{
+        fn f() {}
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        let name = type_name_of(f);
+        &name[..name.len() - 3]
+    }};
 }
 
 impl Display for LandslideError {
@@ -17,6 +46,7 @@ impl Display for LandslideError {
                 f,
                 "No ports were available to bind the plugin's gRPC server to."
             ),
+            Self::GRPCHandshakeMagicCookieValueMismatch => write!(f, "This executable is meant to be a go-plugin to other processes. Do not run this directly. The Magic Handshake failed."),
             Self::SledError(e) => write!(f, "An error occurred in the Sled database: {:?}", e),
             Self::FromHexError(e) => write!(f, "Unable to parse bytes from hexadecimal: {:?}", e),
             Self::SerdeJsonError(e) => write!(
@@ -25,6 +55,9 @@ impl Display for LandslideError {
                 e
             ),
             Self::Generic(s) => write!(f, "{}", s),
+            Self::StdIoError(e) => write!(f, "Error with IO: {:?}", e),
+            Self::SetLoggerError(e) => write!(f, "Error setting logger: {:?}", e),
+            Self::TonicTransportError(e) => write!(f, "Error with tonic (gRPC) transport: {:?}", e),
         }
     }
 }
@@ -46,5 +79,23 @@ impl From<hex::FromHexError> for LandslideError {
 impl From<serde_json::Error> for LandslideError {
     fn from(err: serde_json::Error) -> Self {
         Self::SerdeJsonError(err)
+    }
+}
+
+impl From<std::io::Error> for LandslideError {
+    fn from(err: std::io::Error) -> Self {
+        Self::StdIoError(err)
+    }
+}
+
+impl From<log::SetLoggerError> for LandslideError {
+    fn from(err: log::SetLoggerError) -> Self {
+        Self::SetLoggerError(err)
+    }
+}
+
+impl From<tonic::transport::Error> for LandslideError {
+    fn from(err: tonic::transport::Error) -> Self {
+        Self::TonicTransportError(err)
     }
 }

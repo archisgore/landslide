@@ -3,9 +3,9 @@ use hex::ToHex;
 use hmac_sha256::Hash;
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::str::FromStr;
 use zerocopy::{AsBytes, FromBytes, Unaligned};
-use std::fmt::{Display, Formatter, Result as FmtResult};
 
 pub const ZERO_ID: Id = Id([0; 32]);
 
