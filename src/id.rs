@@ -9,7 +9,7 @@ use zerocopy::{AsBytes, FromBytes, Unaligned};
 
 pub const ZERO_ID: Id = Id([0; 32]);
 
-#[derive(Serialize, Deserialize, AsBytes, FromBytes, Unaligned)]
+#[derive(Debug, Serialize, Deserialize, AsBytes, FromBytes, Unaligned, Hash, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Id([u8; 32]);
 

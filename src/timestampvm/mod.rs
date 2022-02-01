@@ -6,13 +6,17 @@ use crate::error::LandslideError;
 use crate::function;
 
 use super::context::Context;
-use super::vm::*;
+use super::vm::vm_proto::*;
 use tonic::{Request, Response, Status};
 
-use block::State;
+use block::{Block, State, Status as BlockStatus, StorageBlock};
 use semver::Version;
 
+use crate::id::Id;
+use crate::vm::vm_proto::vm_server::Vm;
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
+use time::{Duration, OffsetDateTime};
 use tokio::sync::RwLock;
 
 // DRY on accessing a mutable reference to interior state
@@ -46,6 +50,15 @@ macro_rules! err_status {
 
 const BLOCK_DATA_LEN: usize = 32;
 
+// Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
+// To get a u32 representation of this, just pick any one variant 'as u32'. For example:
+//     lock: Lock::WriteLock as u32
+pub enum Lock {
+    WriteLock,
+    ReadLock,
+    NoLock,
+}
+
 // TimestampVM cannot mutably reference self on all its trait methods.
 // Instead it stores an instance of TimestampVmInterior, which is mutable, and can be
 // modified by the calls to TimestampVm's VM trait.
@@ -54,6 +67,7 @@ struct TimestampVmInterior {
     ctx: Option<Context>,
     version: Version,
     state: State,
+    verified_blocks: HashMap<Id, Block>,
 }
 
 #[derive(Debug)]
@@ -68,11 +82,14 @@ impl TimestampVm {
                 ctx: None,
                 version: Version::new(1, 2, 1),
                 state: State::new(sled::open("block_store")?),
+                verified_blocks: HashMap::new(),
             }),
         })
     }
 
     async fn init_genessis(&self, genesis_bytes: &[u8]) -> Result<(), Status> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+
         mutable_interior!(self, interior);
 
         if err_status!(
@@ -89,6 +106,98 @@ impl TimestampVm {
                 BLOCK_DATA_LEN
             )));
         }
+
+        Ok(())
+    }
+
+    // Verify returns nil iff this block is valid.
+    // To be valid, it must be that:
+    // b.parent.Timestamp < b.Timestamp <= [local time] + 1 hour
+    async fn verify_block(&mut self, block: Block) -> Result<(), LandslideError> {
+        mutable_interior!(self, interior);
+
+        let bid = block.id()?;
+        let parent_sb = match interior.state.get_block(&block.parent_id)? {
+            Some(pb) => pb,
+            None => {
+                return Err(LandslideError::NoParentBlock {
+                    block_id: bid,
+                    parent_block_id: block.parent_id,
+                })
+            }
+        };
+
+        // Ensure [b]'s height comes right after its parent's height
+        if parent_sb.block.height + 1 != block.height {
+            return Err(LandslideError::ParentBlockHeightUnexpected {
+                block_height: block.height,
+                parent_block_height: parent_sb.block.height,
+            });
+        }
+
+        let bts = block.timestamp()?;
+        let pbts = parent_sb.block.timestamp()?;
+        // Ensure [b]'s timestamp is after its parent's timestamp.
+        if block.timestamp()? < parent_sb.block.timestamp()? {
+            return Err(LandslideError::Generic(format!("The current block {}'s  timestamp {}, is before the parent block {}'s timestamp {}, which is invalid for a Blockchain.", bid, bts, block.parent_id, pbts)));
+        }
+
+        // Ensure [b]'s timestamp is not more than an hour
+        // ahead of this node's time
+        let now = OffsetDateTime::now_utc();
+        let one_hour_from_now = match now.checked_add(Duration::hours(1)) {
+            Some(t) => t,
+            None => {
+                return Err(LandslideError::Generic(
+                    "Unable to compute time 1 hour from now.".to_string(),
+                ))
+            }
+        };
+
+        if bts >= one_hour_from_now {
+            return Err(LandslideError::Generic(format!("The current block {}'s  timestamp {}, is more than 1 hour in the future compared to this node's time {}", bid, bts, now)));
+        }
+
+        // Put that block to verified blocks in memory
+        interior.verified_blocks.insert(bid, block);
+
+        Ok(())
+    }
+
+    // Accept sets this block's status to Accepted and sets lastAccepted to this
+    // block's ID and saves this info to b.vm.DB
+    async fn accept(&self, block: Block) -> Result<(), LandslideError> {
+        mutable_interior!(self, interior);
+
+        let sb = StorageBlock {
+            block: block,
+            status: BlockStatus::Accepted,
+        };
+
+        let block_id = sb.block.id()?;
+
+        // Persist data
+        interior.state.put_block(sb)?;
+
+        interior.state.set_last_accepted_block_id(&block_id)?;
+
+        Ok(())
+    }
+
+    // Reject sets this block's status to Rejected and saves the status in state
+    // Recall that b.vm.DB.Commit() must be called to persist to the DB
+    async fn reject(&self, block: Block) -> Result<(), LandslideError> {
+        mutable_interior!(self, interior);
+
+        let sb = StorageBlock {
+            block: block,
+            status: BlockStatus::Rejected,
+        };
+
+        let block_id = sb.block.id()?;
+
+        // Persist data
+        interior.state.put_block(sb)?;
 
         Ok(())
     }
@@ -182,17 +291,18 @@ impl Vm for TimestampVm {
 
     async fn bootstrapping(&self, _request: Request<()>) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn bootstrapped(&self, _request: Request<()>) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn shutdown(&self, _request: Request<()>) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+
+        Ok(Response::new(()))
     }
 
     async fn create_handlers(
@@ -200,20 +310,39 @@ impl Vm for TimestampVm {
         _request: Request<()>,
     ) -> Result<Response<CreateHandlersResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+
+        let vm_api_service = Handler {
+            prefix: "".to_string(),
+            lock_options: Lock::NoLock as u32,
+            server: 10,
+        };
+
+        Ok(Response::new(CreateHandlersResponse {
+            handlers: vec![vm_api_service],
+        }))
     }
 
+    // This is the code that we must meet: https://github.com/ava-labs/avalanchego/blob/master/vms/rpcchainvm/vm_client.go#L343
     async fn create_static_handlers(
         &self,
         _request: Request<()>,
     ) -> Result<Response<CreateStaticHandlersResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+
+        let vm_static_api_service = Handler {
+            prefix: "".to_string(),
+            lock_options: Lock::NoLock as u32,
+            server: 50223,
+        };
+
+        Ok(Response::new(CreateStaticHandlersResponse {
+            handlers: vec![vm_static_api_service],
+        }))
     }
 
     async fn connected(&self, _request: Request<ConnectedRequest>) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn disconnected(
@@ -221,7 +350,7 @@ impl Vm for TimestampVm {
         _request: Request<DisconnectedRequest>,
     ) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn build_block(
@@ -253,7 +382,7 @@ impl Vm for TimestampVm {
         _request: Request<SetPreferenceRequest>,
     ) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn health(&self, _request: Request<()>) -> Result<Response<HealthResponse>, Status> {
@@ -269,7 +398,13 @@ impl Vm for TimestampVm {
         immutable_interior!(self, interior);
 
         let version = interior.version.to_string();
-        log::info!("{}, ({},{}) - responding with version {}", function!(), file!(), line!(), version);
+        log::info!(
+            "{}, ({},{}) - responding with version {}",
+            function!(),
+            file!(),
+            line!(),
+            version
+        );
         Ok(Response::new(VersionResponse {
             version: interior.version.to_string(),
         }))
@@ -277,7 +412,7 @@ impl Vm for TimestampVm {
 
     async fn app_request(&self, _request: Request<AppRequestMsg>) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn app_request_failed(
@@ -285,7 +420,7 @@ impl Vm for TimestampVm {
         _request: Request<AppRequestFailedMsg>,
     ) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn app_response(
@@ -293,12 +428,12 @@ impl Vm for TimestampVm {
         _request: Request<AppResponseMsg>,
     ) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn app_gossip(&self, _request: Request<AppGossipMsg>) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn gather(&self, _request: Request<()>) -> Result<Response<GatherResponse>, Status> {
@@ -319,7 +454,7 @@ impl Vm for TimestampVm {
         _request: Request<BlockAcceptRequest>,
     ) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn block_reject(
@@ -327,7 +462,7 @@ impl Vm for TimestampVm {
         _request: Request<BlockRejectRequest>,
     ) -> Result<Response<()>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        todo!()
+        Ok(Response::new(()))
     }
 
     async fn get_ancestors(

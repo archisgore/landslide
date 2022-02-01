@@ -1,8 +1,13 @@
+use super::id::Id;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 
 #[derive(Debug)]
 pub enum LandslideError {
+    NoParentBlock {
+        block_id: Id,
+        parent_block_id: Id,
+    },
     NoTCPPortAvailable,
     GRPCHandshakeMagicCookieValueMismatch,
     SledError(sled::Error),
@@ -12,10 +17,15 @@ pub enum LandslideError {
     SetLoggerError(log::SetLoggerError),
     Generic(String),
     TonicTransportError(tonic::transport::Error),
+    ParentBlockHeightUnexpected {
+        block_height: u64,
+        parent_block_height: u64,
+    },
+    TimeErrorComponentRange(time::error::ComponentRange),
 }
 
 #[macro_export]
-macro_rules! log_then_bubble_error {
+macro_rules! log_and_escalate {
     ($e:expr) => {
         match $e {
             Err(err) => {
@@ -58,6 +68,12 @@ impl Display for LandslideError {
             Self::StdIoError(e) => write!(f, "Error with IO: {:?}", e),
             Self::SetLoggerError(e) => write!(f, "Error setting logger: {:?}", e),
             Self::TonicTransportError(e) => write!(f, "Error with tonic (gRPC) transport: {:?}", e),
+            Self::NoParentBlock{block_id, parent_block_id} => write!(
+                f,
+                "No parent block with id {} found for block with id {}. All blocks have parents (since the genesis block is bootstrapped especially for this purpose). This block is invalid.", parent_block_id, block_id
+            ),
+            Self::ParentBlockHeightUnexpected{block_height, parent_block_height} => write!(f, "Parent block height, {}, should have been exactly 1 greater than the block's height {}. This block is invalid.", parent_block_height, block_height),
+            Self::TimeErrorComponentRange(e) => write!(f, "A time component range error occurred: {:?}", e),
         }
     }
 }
@@ -97,5 +113,11 @@ impl From<log::SetLoggerError> for LandslideError {
 impl From<tonic::transport::Error> for LandslideError {
     fn from(err: tonic::transport::Error) -> Self {
         Self::TonicTransportError(err)
+    }
+}
+
+impl From<time::error::ComponentRange> for LandslideError {
+    fn from(err: time::error::ComponentRange) -> Self {
+        Self::TimeErrorComponentRange(err)
     }
 }

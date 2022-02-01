@@ -4,6 +4,8 @@ use crate::error::LandslideError;
 use crate::id::Id;
 use serde::{Deserialize, Serialize};
 use sled::Db;
+use std::convert::TryInto;
+use time::OffsetDateTime;
 
 const LAST_ACCEPTED_BLOCK_ID_KEY: &[u8] = b"last_accepted_block_id";
 const STATE_INITIALIZED_KEY: &[u8] = b"state_initialized";
@@ -15,7 +17,7 @@ const STATE_INITIALIZED_VALUE: &[u8] = b"state_has_infact_been_initialized";
 // 2) Height
 // 3) Timestamp
 // 4) A piece of data (a string)
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Block {
     pub parent_id: Id,
     pub height: u64,
@@ -23,18 +25,36 @@ pub struct Block {
     pub data: Vec<u8>,
 }
 
+impl Block {
+    pub fn id(&self) -> Result<Id, LandslideError> {
+        let block_bytes = serde_json::to_vec(&self)?;
+        let block_id = Id::new(&block_bytes)?;
+        Ok(block_id)
+    }
+
+    pub fn timestamp(&self) -> Result<OffsetDateTime, LandslideError> {
+        let timestamp_bytes = self.timestamp.clone();
+
+        // for now we only know what to do with the first 8 bytes (64 bits)
+        if timestamp_bytes.len() < 8 {
+            return Err(LandslideError::Generic(format!("There were {} bytes, which is less than the required 8 bytes in the timestamp field, since we interpret it as a 64-bit timestamp.", self.timestamp.len())));
+        }
+
+        let timestamp_little_endian: [u8; 8] =
+            timestamp_bytes.try_into().unwrap_or_else(|v: Vec<u8>| {
+                panic!("Expected a Vec of length {} but it was {}", 8, v.len())
+            });
+
+        return Ok(OffsetDateTime::from_unix_timestamp(i64::from_le_bytes(
+            timestamp_little_endian,
+        ))?);
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct StorageBlock {
     pub block: Block,
     pub status: Status,
-}
-
-impl StorageBlock {
-    pub fn id(&self) -> Result<Id, LandslideError> {
-        let block_bytes = serde_json::to_vec(&self.block)?;
-        let block_id = Id::new(&block_bytes)?;
-        Ok(block_id)
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -97,9 +117,9 @@ impl State {
         Ok(Some(sb))
     }
 
-    pub fn put_block(&self, block: StorageBlock) -> Result<(), LandslideError> {
-        let block_bytes = serde_json::to_vec(&block)?;
-        self.block_db.insert(block.id()?, block_bytes)?;
+    pub fn put_block(&self, sb: StorageBlock) -> Result<(), LandslideError> {
+        let block_bytes = serde_json::to_vec(&sb)?;
+        self.block_db.insert(sb.block.id()?, block_bytes)?;
         Ok(())
     }
 
