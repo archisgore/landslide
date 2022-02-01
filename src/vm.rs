@@ -14,7 +14,7 @@ pub mod io {
 
 use crate::vm::vm_proto::vm_server::{Vm, VmServer};
 use futures::future::BoxFuture;
-use grr_plugin::Plugin;
+use grr_plugin::{Plugin, PluginServer};
 use std::clone::Clone;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -65,3 +65,5 @@ impl<V: Vm> Clone for PluginVmServer<V> {
 }
 
 impl<V: Vm> Plugin for PluginVmServer<V> {}
+
+impl<V: Vm> PluginServer for PluginVmServer<V> {}
