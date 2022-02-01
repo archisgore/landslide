@@ -19,7 +19,7 @@ use std::clone::Clone;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tonic::body::BoxBody;
-use tonic::codegen::{Never, StdError};
+use tonic::codegen::Never;
 use tonic::transport::{Body, NamedService};
 use tower::Service;
 

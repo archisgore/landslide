@@ -45,9 +45,9 @@ impl Block {
                 panic!("Expected a Vec of length {} but it was {}", 8, v.len())
             });
 
-        return Ok(OffsetDateTime::from_unix_timestamp(i64::from_le_bytes(
+        Ok(OffsetDateTime::from_unix_timestamp(i64::from_le_bytes(
             timestamp_little_endian,
-        ))?);
+        ))?)
     }
 }
 

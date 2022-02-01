@@ -170,7 +170,7 @@ impl TimestampVm {
         mutable_interior!(self, interior);
 
         let sb = StorageBlock {
-            block: block,
+            block,
             status: BlockStatus::Accepted,
         };
 
@@ -190,11 +190,11 @@ impl TimestampVm {
         mutable_interior!(self, interior);
 
         let sb = StorageBlock {
-            block: block,
+            block,
             status: BlockStatus::Rejected,
         };
 
-        let block_id = sb.block.id()?;
+        let _block_id = sb.block.id()?;
 
         // Persist data
         interior.state.put_block(sb)?;
