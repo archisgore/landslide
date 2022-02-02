@@ -12,7 +12,7 @@ use simplelog::{Config, WriteLogger};
 use std::error::Error;
 use std::fs::File;
 use timestampvm::TimestampVm;
-use vm::PluginVmServer;
+use vm::vm_proto::vm_server::VmServer;
 
 //https://github.com/ava-labs/avalanchego/blob/master/vms/rpcchainvm/vm.go#L19
 const AVALANCHE_VM_PROTOCOL_VERSION: u32 = 9;
@@ -31,19 +31,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         logfile
     ));
 
-    log::info!("Initialized the timestampvm logger");
-
-    let vm = PluginVmServer::new(TimestampVm::new()?);
-    log::info!("TimestampVm Service Created");
-
     log::info!("creating grr-plugin (go-plugin) Server...");
-    let plugin = Server::new(
+    let mut plugin = Server::new(
         AVALANCHE_VM_PROTOCOL_VERSION,
         HandshakeConfig {
             magic_cookie_key: MAGIC_COOKIE_KEY.to_string(),
             magic_cookie_value: MAGIC_COOKIE_VALUE.to_string(),
         },
     );
+
+    log::info!("Initialized the timestampvm logger");
+    let vm = VmServer::new(TimestampVm::new(plugin.get_conn_info_sender())?);
+    log::info!("TimestampVm Service Created");
 
     log_and_escalate!(plugin.serve(vm).await);
 

@@ -14,9 +14,11 @@ use semver::Version;
 
 use crate::id::Id;
 use crate::vm::vm_proto::vm_server::Vm;
+use grr_plugin::ConnInfo;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use time::{Duration, OffsetDateTime};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::RwLock;
 
 // DRY on accessing a mutable reference to interior state
@@ -68,6 +70,7 @@ struct TimestampVmInterior {
     version: Version,
     state: State,
     verified_blocks: HashMap<Id, Block>,
+    conn_info_sender: UnboundedSender<Result<ConnInfo, Status>>,
 }
 
 #[derive(Debug)]
@@ -76,13 +79,16 @@ pub struct TimestampVm {
 }
 
 impl TimestampVm {
-    pub fn new() -> Result<TimestampVm, LandslideError> {
+    pub fn new(
+        conn_info_sender: UnboundedSender<Result<ConnInfo, Status>>,
+    ) -> Result<TimestampVm, LandslideError> {
         Ok(TimestampVm {
             interior: RwLock::new(TimestampVmInterior {
                 ctx: None,
                 version: Version::new(1, 2, 1),
                 state: State::new(sled::open("block_store")?),
                 verified_blocks: HashMap::new(),
+                conn_info_sender,
             }),
         })
     }
