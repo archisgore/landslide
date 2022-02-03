@@ -10,6 +10,7 @@ pub enum LandslideError {
     },
     NoTCPPortAvailable,
     GRPCHandshakeMagicCookieValueMismatch,
+    StateNotInitialized,
     SledError(sled::Error),
     FromHexError(hex::FromHexError),
     SerdeJsonError(serde_json::Error),
@@ -49,6 +50,11 @@ macro_rules! function {
     }};
 }
 
+pub fn into_status(err: LandslideError) -> tonic::Status {
+    tonic::Status::unknown(format!("landslide error: {:?}", err))
+}
+
+
 impl Display for LandslideError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
@@ -57,6 +63,7 @@ impl Display for LandslideError {
                 "No ports were available to bind the plugin's gRPC server to."
             ),
             Self::GRPCHandshakeMagicCookieValueMismatch => write!(f, "This executable is meant to be a go-plugin to other processes. Do not run this directly. The Magic Handshake failed."),
+            Self::StateNotInitialized => write!(f, "The VM has not yet been initialized, and it's internal state is empty."),
             Self::SledError(e) => write!(f, "An error occurred in the Sled database: {:?}", e),
             Self::FromHexError(e) => write!(f, "Unable to parse bytes from hexadecimal: {:?}", e),
             Self::SerdeJsonError(e) => write!(
@@ -121,3 +128,4 @@ impl From<time::error::ComponentRange> for LandslideError {
         Self::TimeErrorComponentRange(err)
     }
 }
+

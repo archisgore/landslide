@@ -19,24 +19,9 @@ use grr_plugin::log_and_escalate_status;
 use grr_plugin::JsonRpcBroker;
 use grr_plugin::Status;
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
 use time::{Duration, OffsetDateTime};
 use tokio::sync::RwLock;
-
-// DRY on accessing a mutable reference to interior state
-macro_rules! mutable_interior {
-    ($self:ident, $interior:ident) => {
-        let mut interior_write_guard = $self.interior.write().await;
-        let $interior = interior_write_guard.deref_mut();
-    };
-}
-
-macro_rules! immutable_interior {
-    ($self:ident, $interior:ident) => {
-        let interior_read_guard = $self.interior.read().await;
-        let $interior = interior_read_guard.deref();
-    };
-}
+use super::error::into_status;
 
 macro_rules! err_status {
     ($e:expr, $m:expr) => {
@@ -44,7 +29,7 @@ macro_rules! err_status {
             Ok(si) => si,
             Err(err) => {
                 return Err(Status::unknown(format!(
-                    "Unknown error when {}: {:?}",
+                    "unknown error when {}: {:?}",
                     $m, err
                 )))
             }
@@ -69,7 +54,7 @@ pub enum Lock {
 struct TimestampVmInterior {
     ctx: Option<Context>,
     version: Version,
-    state: State,
+    state: Option<State>,
     verified_blocks: HashMap<Id, Block>,
     jsonrpc_broker: JsonRpcBroker,
 }
@@ -84,7 +69,7 @@ impl TimestampVm {
             interior: RwLock::new(TimestampVmInterior {
                 ctx: None,
                 version: Version::new(1, 2, 1),
-                state: State::new(sled::open("block_store")?),
+                state: None,
                 verified_blocks: HashMap::new(),
                 jsonrpc_broker,
             }),
@@ -93,11 +78,12 @@ impl TimestampVm {
 
     async fn init_genessis(&self, genesis_bytes: &[u8]) -> Result<(), Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        let mut writable_interor = self.interior.write().await;
 
-        mutable_interior!(self, interior);
+        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized).map_err(into_status)?;
 
         if err_status!(
-            interior.state.is_state_initialized(),
+            state.is_state_initialized(),
             "checking whether state is initialized"
         ) {
             return Ok(());
@@ -118,10 +104,11 @@ impl TimestampVm {
     // To be valid, it must be that:
     // b.parent.Timestamp < b.Timestamp <= [local time] + 1 hour
     async fn verify_block(&mut self, block: Block) -> Result<(), LandslideError> {
-        mutable_interior!(self, interior);
+        let mut writable_interor = self.interior.write().await;
+        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized)?;
 
         let bid = block.id()?;
-        let parent_sb = match interior.state.get_block(&block.parent_id)? {
+        let parent_sb = match state.get_block(&block.parent_id)? {
             Some(pb) => pb,
             None => {
                 return Err(LandslideError::NoParentBlock {
@@ -163,7 +150,7 @@ impl TimestampVm {
         }
 
         // Put that block to verified blocks in memory
-        interior.verified_blocks.insert(bid, block);
+        writable_interor.verified_blocks.insert(bid, block);
 
         Ok(())
     }
@@ -171,7 +158,8 @@ impl TimestampVm {
     // Accept sets this block's status to Accepted and sets lastAccepted to this
     // block's ID and saves this info to b.vm.DB
     async fn accept(&self, block: Block) -> Result<(), LandslideError> {
-        mutable_interior!(self, interior);
+        let mut writable_interor = self.interior.write().await;
+        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized)?;
 
         let sb = StorageBlock {
             block,
@@ -181,9 +169,9 @@ impl TimestampVm {
         let block_id = sb.block.id()?;
 
         // Persist data
-        interior.state.put_block(sb)?;
+        state.put_block(sb)?;
 
-        interior.state.set_last_accepted_block_id(&block_id)?;
+        state.set_last_accepted_block_id(&block_id)?;
 
         Ok(())
     }
@@ -191,7 +179,8 @@ impl TimestampVm {
     // Reject sets this block's status to Rejected and saves the status in state
     // Recall that b.vm.DB.Commit() must be called to persist to the DB
     async fn reject(&self, block: Block) -> Result<(), LandslideError> {
-        mutable_interior!(self, interior);
+        let mut writable_interor = self.interior.write().await;
+        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized)?;
 
         let sb = StorageBlock {
             block,
@@ -201,7 +190,7 @@ impl TimestampVm {
         let _block_id = sb.block.id()?;
 
         // Persist data
-        interior.state.put_block(sb)?;
+        state.put_block(sb)?;
 
         Ok(())
     }
@@ -215,7 +204,8 @@ impl Vm for TimestampVm {
     ) -> Result<Response<InitializeResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
 
-        mutable_interior!(self, interior);
+        let mut writable_interor = self.interior.write().await;
+        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized).map_err(into_status)?;
 
         let version = match self.version(Request::new(())).await {
             Ok(v) => v,
@@ -230,7 +220,7 @@ impl Vm for TimestampVm {
         log::info!("TimestampVm::Initialize obtained VM version: {:?}", version);
 
         let ir = request.into_inner();
-        interior.ctx = Some(Context {
+        writable_interor.ctx = Some(Context {
             network_id: ir.network_id,
             subnet_id: ir.subnet_id,
             chain_id: ir.chain_id,
@@ -247,7 +237,7 @@ impl Vm for TimestampVm {
         log::info!("TimestampVm::Initialize genesis initialized");
 
         let labid = match err_status!(
-            interior.state.get_last_accepted_block_id(),
+            state.get_last_accepted_block_id(),
             "obtaining last accepted block id"
         ) {
             Some(l) => l,
@@ -264,7 +254,7 @@ impl Vm for TimestampVm {
         );
 
         let sb = match err_status!(
-            interior.state.get_block(&labid),
+            state.get_block(&labid),
             format!("getting last accepted block from id {}", labid)
         ) {
             Some(sb) => sb,
@@ -324,7 +314,7 @@ impl Vm for TimestampVm {
         _request: Request<()>,
     ) -> Result<Response<CreateHandlersResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        mutable_interior!(self, interior);
+        let mut writable_interor = self.interior.write().await;
 
         log::debug!(
             "{}, ({},{}) - Creating a new JSON-RPC 2.0 server for handlers...",
@@ -333,7 +323,7 @@ impl Vm for TimestampVm {
             line!()
         );
         let server_id = log_and_escalate_status!(
-            interior
+            writable_interor
                 .jsonrpc_broker
                 .new_server(static_handlers::new())
                 .await
@@ -368,7 +358,7 @@ impl Vm for TimestampVm {
         _request: Request<()>,
     ) -> Result<Response<CreateStaticHandlersResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        mutable_interior!(self, interior);
+        let mut writable_interor = self.interior.write().await;
 
         log::debug!(
             "{}, ({},{}) - Creating a new JSON-RPC 2.0 server for static handlers...",
@@ -377,7 +367,7 @@ impl Vm for TimestampVm {
             line!()
         );
         let server_id = log_and_escalate_status!(
-            interior
+            writable_interor
                 .jsonrpc_broker
                 .new_server(static_handlers::new())
                 .await
@@ -455,9 +445,9 @@ impl Vm for TimestampVm {
 
     async fn version(&self, _request: Request<()>) -> Result<Response<VersionResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        immutable_interior!(self, interior);
+        let readable_interior = self.interior.read().await;
 
-        let version = interior.version.to_string();
+        let version = readable_interior.version.to_string();
         log::info!(
             "{}, ({},{}) - responding with version {}",
             function!(),
@@ -466,7 +456,7 @@ impl Vm for TimestampVm {
             version
         );
         Ok(Response::new(VersionResponse {
-            version: interior.version.to_string(),
+            version: readable_interior.version.to_string(),
         }))
     }
 

@@ -20,7 +20,6 @@ const AVALANCHE_VM_PROTOCOL_VERSION: u32 = 9;
 // https://github.com/ava-labs/avalanchego/blob/master/vms/rpcchainvm/vm.go#L20
 const MAGIC_COOKIE_KEY: &str = "VM_PLUGIN";
 const MAGIC_COOKIE_VALUE: &str = "dynamic";
-const LOCALHOST_ADVERTISE_ADDR: &str = "127.0.0.1";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -40,11 +39,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
     ));
 
+
     // extract the JSON-RPC Broker
     let jsonrpc_broker = plugin.jsonrpc_broker().await?;
 
+    let tsvm = log_and_escalate!(TimestampVm::new(jsonrpc_broker));
+
     log::info!("Initialized the timestampvm logger");
-    let vm = VmServer::new(TimestampVm::new(jsonrpc_broker)?);
+    let vm = VmServer::new(tsvm);
     log::info!("TimestampVm Service Created");
 
     log_and_escalate!(plugin.serve(vm).await);
