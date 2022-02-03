@@ -54,7 +54,6 @@ pub fn into_status(err: LandslideError) -> tonic::Status {
     tonic::Status::unknown(format!("landslide error: {:?}", err))
 }
 
-
 impl Display for LandslideError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
@@ -128,4 +127,3 @@ impl From<time::error::ComponentRange> for LandslideError {
         Self::TimeErrorComponentRange(err)
     }
 }
-

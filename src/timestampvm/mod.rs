@@ -13,6 +13,8 @@ use tonic::{Request, Response};
 use block::{Block, State, Status as BlockStatus, StorageBlock};
 use semver::Version;
 
+use super::error::into_status;
+use super::log_and_escalate;
 use crate::id::Id;
 use crate::vm::vm_proto::vm_server::Vm;
 use grr_plugin::log_and_escalate_status;
@@ -20,8 +22,7 @@ use grr_plugin::JsonRpcBroker;
 use grr_plugin::Status;
 use std::collections::HashMap;
 use time::{Duration, OffsetDateTime};
-use tokio::sync::RwLock;
-use super::error::into_status;
+use tokio::sync::{RwLock, RwLockReadGuard};
 
 const BLOCK_DATA_LEN: usize = 32;
 
@@ -29,8 +30,8 @@ const BLOCK_DATA_LEN: usize = 32;
 // To get a u32 representation of this, just pick any one variant 'as u32'. For example:
 //     lock: Lock::WriteLock as u32
 pub enum Lock {
-    WriteLock,
-    ReadLock,
+    Write,
+    Read,
     NoLock,
 }
 
@@ -66,11 +67,15 @@ impl TimestampVm {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
 
         let mut writable_interor = self.interior.write().await;
-        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized).map_err(into_status)?;
+        let state = writable_interor
+            .state
+            .as_mut()
+            .ok_or(LandslideError::StateNotInitialized)
+            .map_err(into_status)?;
 
         if state.is_state_initialized().map_err(into_status)? {
             // State is already initialized - no need to init genessis block
-            return Ok(())
+            return Ok(());
         }
 
         if genesis_bytes.len() != BLOCK_DATA_LEN {
@@ -89,7 +94,10 @@ impl TimestampVm {
     // b.parent.Timestamp < b.Timestamp <= [local time] + 1 hour
     async fn verify_block(&mut self, block: Block) -> Result<(), LandslideError> {
         let mut writable_interor = self.interior.write().await;
-        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized)?;
+        let state = writable_interor
+            .state
+            .as_mut()
+            .ok_or(LandslideError::StateNotInitialized)?;
 
         let bid = block.id()?;
         let parent_sb = match state.get_block(&block.parent_id)? {
@@ -143,7 +151,10 @@ impl TimestampVm {
     // block's ID and saves this info to b.vm.DB
     async fn accept(&self, block: Block) -> Result<(), LandslideError> {
         let mut writable_interor = self.interior.write().await;
-        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized)?;
+        let state = writable_interor
+            .state
+            .as_mut()
+            .ok_or(LandslideError::StateNotInitialized)?;
 
         let sb = StorageBlock {
             block,
@@ -164,7 +175,10 @@ impl TimestampVm {
     // Recall that b.vm.DB.Commit() must be called to persist to the DB
     async fn reject(&self, block: Block) -> Result<(), LandslideError> {
         let mut writable_interor = self.interior.write().await;
-        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized)?;
+        let state = writable_interor
+            .state
+            .as_mut()
+            .ok_or(LandslideError::StateNotInitialized)?;
 
         let sb = StorageBlock {
             block,
@@ -178,6 +192,23 @@ impl TimestampVm {
 
         Ok(())
     }
+
+    async fn version_on_readable_interior(
+        readable_interior: &TimestampVmInterior,
+        _request: Request<()>,
+    ) -> Result<Response<VersionResponse>, Status> {
+        let version = readable_interior.version.to_string();
+        log::info!(
+            "{}, ({},{}) - responding with version {}",
+            function!(),
+            file!(),
+            line!(),
+            version
+        );
+        Ok(Response::new(VersionResponse {
+            version: readable_interior.version.to_string(),
+        }))
+    }
 }
 
 #[tonic::async_trait]
@@ -187,23 +218,26 @@ impl Vm for TimestampVm {
         request: Request<InitializeRequest>,
     ) -> Result<Response<InitializeResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        let mut writable_interior = self.interior.write().await;
 
-        let mut writable_interor = self.interior.write().await;
+        log::info!("TimestampVm::Initialize Calling Version...");
 
-        let version = match self.version(Request::new(())).await {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(Status::unknown(format!(
-                "Unable to initialize the Timestamp VM. Unable to fetch self version. Error: {:?}",
-                e
-            )))
-            }
-        };
+        let version = log_and_escalate!(
+            Self::version_on_readable_interior(&writable_interior, Request::new(())).await
+        );
 
         log::info!("TimestampVm::Initialize obtained VM version: {:?}", version);
 
         let ir = request.into_inner();
-        writable_interor.ctx = Some(Context {
+        log::info!(
+            "{}, ({},{}) - Request: {:?}",
+            function!(),
+            file!(),
+            line!(),
+            ir
+        );
+
+        writable_interior.ctx = Some(Context {
             network_id: ir.network_id,
             subnet_id: ir.subnet_id,
             chain_id: ir.chain_id,
@@ -215,12 +249,17 @@ impl Vm for TimestampVm {
 
         log::info!("TimestampVm::Initialize setup context from genesis data");
 
-        self.init_genessis(ir.genesis_bytes.as_ref()).await?;
+        log_and_escalate!(self.init_genessis(ir.genesis_bytes.as_ref()).await);
 
         log::info!("TimestampVm::Initialize genesis initialized");
 
-        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized).map_err(into_status)?;
-        let labid = match state.get_last_accepted_block_id().map_err(into_status)? {
+        let state = writable_interior
+            .state
+            .as_mut()
+            .ok_or(LandslideError::StateNotInitialized)
+            .map_err(into_status)?;
+        let labid = match log_and_escalate!(state.get_last_accepted_block_id().map_err(into_status))
+        {
             Some(l) => l,
             None => {
                 return Err(Status::unknown(
@@ -251,22 +290,12 @@ impl Vm for TimestampVm {
             u32status
         );
 
-        /*
         Ok(Response::new(InitializeResponse {
             last_accepted_id: Vec::from(labid.as_ref()),
             last_accepted_parent_id: Vec::from(sb.block.parent_id.as_ref()),
             bytes: sb.block.data,
             height: sb.block.height,
             timestamp: sb.block.timestamp,
-            status: u32status,
-        }))
-        */
-        Ok(Response::new(InitializeResponse {
-            last_accepted_id: Vec::new(),
-            last_accepted_parent_id: Vec::new(),
-            bytes: Vec::new(),
-            height: 2,
-            timestamp: Vec::new(),
             status: u32status,
         }))
     }
@@ -421,21 +450,10 @@ impl Vm for TimestampVm {
         }))
     }
 
-    async fn version(&self, _request: Request<()>) -> Result<Response<VersionResponse>, Status> {
+    async fn version(&self, request: Request<()>) -> Result<Response<VersionResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
         let readable_interior = self.interior.read().await;
-
-        let version = readable_interior.version.to_string();
-        log::info!(
-            "{}, ({},{}) - responding with version {}",
-            function!(),
-            file!(),
-            line!(),
-            version
-        );
-        Ok(Response::new(VersionResponse {
-            version: readable_interior.version.to_string(),
-        }))
+        Self::version_on_readable_interior(&readable_interior, request).await
     }
 
     async fn app_request(&self, _request: Request<AppRequestMsg>) -> Result<Response<()>, Status> {

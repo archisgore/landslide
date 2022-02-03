@@ -39,7 +39,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
     ));
 
-
     // extract the JSON-RPC Broker
     let jsonrpc_broker = plugin.jsonrpc_broker().await?;
 
