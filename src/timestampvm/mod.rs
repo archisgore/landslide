@@ -301,7 +301,6 @@ impl Vm for TimestampVm {
             timestamp: Vec::new(),
             status: u32status,
         }))
-
     }
 
     async fn bootstrapping(&self, _request: Request<()>) -> Result<Response<()>, Status> {
@@ -344,7 +343,13 @@ impl Vm for TimestampVm {
             lock_options: Lock::NoLock as u32,
             server: server_id,
         };
-        log::debug!("{}, ({},{}) - Created a new JSON-RPC 2.0 server for handlers with server_id: {}", function!(), file!(), line!(), server_id);
+        log::debug!(
+            "{}, ({},{}) - Created a new JSON-RPC 2.0 server for handlers with server_id: {}",
+            function!(),
+            file!(),
+            line!(),
+            server_id
+        );
 
         log::debug!(
             "{}, ({},{}) - called - responding with API service.",
