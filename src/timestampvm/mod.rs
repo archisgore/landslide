@@ -7,7 +7,7 @@ use crate::error::LandslideError;
 use crate::function;
 
 use super::context::Context;
-use super::vm::vm_proto::*;
+use super::proto::vm_proto::*;
 use tonic::{Request, Response};
 
 use block::{Block, State, Status as BlockStatus, StorageBlock};
@@ -16,13 +16,13 @@ use semver::Version;
 use super::error::into_status;
 use super::log_and_escalate;
 use crate::id::Id;
-use crate::vm::vm_proto::vm_server::Vm;
+use crate::proto::vm_proto::vm_server::Vm;
 use grr_plugin::log_and_escalate_status;
 use grr_plugin::JsonRpcBroker;
 use grr_plugin::Status;
 use std::collections::HashMap;
 use time::{Duration, OffsetDateTime};
-use tokio::sync::{RwLock, RwLockReadGuard};
+use tokio::sync::RwLock;
 
 const BLOCK_DATA_LEN: usize = 32;
 

@@ -2,17 +2,17 @@
 pub mod context;
 pub mod error;
 pub mod id;
-pub mod vm;
+pub mod proto;
 
 // timestamp VM
 mod timestampvm;
 
 use grr_plugin::{HandshakeConfig, Server};
+use proto::vm_proto::vm_server::VmServer;
 use simplelog::{Config, WriteLogger};
 use std::error::Error;
 use std::fs::File;
 use timestampvm::TimestampVm;
-use vm::vm_proto::vm_server::VmServer;
 
 //https://github.com/ava-labs/avalanchego/blob/master/vms/rpcchainvm/vm.go#L19
 const AVALANCHE_VM_PROTOCOL_VERSION: u32 = 9;
