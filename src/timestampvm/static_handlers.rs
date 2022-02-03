@@ -31,12 +31,12 @@ impl StaticHandlers for StaticHandlersImpl {
         Ok(23)
     }
 
-    fn encode(&self, data: String, encoding: String, length: i32) -> Result<u64> {
+    fn encode(&self, _data: String, _encoding: String, _length: i32) -> Result<u64> {
         log::info!("{} Encode called", LOG_PREFIX);
         Ok(21)
     }
 
-    fn decode(&self, a: u64, b: u64) -> Result<u64> {
+    fn decode(&self, _a: u64, _b: u64) -> Result<u64> {
         log::info!("{} Decode called", LOG_PREFIX);
         Ok(32)
     }
