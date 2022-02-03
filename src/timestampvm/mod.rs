@@ -23,20 +23,6 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::RwLock;
 use super::error::into_status;
 
-macro_rules! err_status {
-    ($e:expr, $m:expr) => {
-        match $e {
-            Ok(si) => si,
-            Err(err) => {
-                return Err(Status::unknown(format!(
-                    "unknown error when {}: {:?}",
-                    $m, err
-                )))
-            }
-        }
-    };
-}
-
 const BLOCK_DATA_LEN: usize = 32;
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
@@ -78,15 +64,13 @@ impl TimestampVm {
 
     async fn init_genessis(&self, genesis_bytes: &[u8]) -> Result<(), Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-        let mut writable_interor = self.interior.write().await;
 
+        let mut writable_interor = self.interior.write().await;
         let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized).map_err(into_status)?;
 
-        if err_status!(
-            state.is_state_initialized(),
-            "checking whether state is initialized"
-        ) {
-            return Ok(());
+        if state.is_state_initialized().map_err(into_status)? {
+            // State is already initialized - no need to init genessis block
+            return Ok(())
         }
 
         if genesis_bytes.len() != BLOCK_DATA_LEN {
@@ -205,7 +189,6 @@ impl Vm for TimestampVm {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
 
         let mut writable_interor = self.interior.write().await;
-        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized).map_err(into_status)?;
 
         let version = match self.version(Request::new(())).await {
             Ok(v) => v,
@@ -236,10 +219,8 @@ impl Vm for TimestampVm {
 
         log::info!("TimestampVm::Initialize genesis initialized");
 
-        let labid = match err_status!(
-            state.get_last_accepted_block_id(),
-            "obtaining last accepted block id"
-        ) {
+        let state = writable_interor.state.as_mut().ok_or(LandslideError::StateNotInitialized).map_err(into_status)?;
+        let labid = match state.get_last_accepted_block_id().map_err(into_status)? {
             Some(l) => l,
             None => {
                 return Err(Status::unknown(
@@ -253,10 +234,7 @@ impl Vm for TimestampVm {
             labid
         );
 
-        let sb = match err_status!(
-            state.get_block(&labid),
-            format!("getting last accepted block from id {}", labid)
-        ) {
+        let sb = match state.get_block(&labid).map_err(into_status)? {
             Some(sb) => sb,
             None => {
                 return Err(Status::unknown(format!(
