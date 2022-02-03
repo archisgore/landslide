@@ -34,6 +34,10 @@ tower = "0.4.11"
 hyper = "0.14.16"
 http = "0.2.6"
 futures = "0.3.19"
+jsonrpc-http-server = "18.0.0"
+jsonrpc-derive = "18.0.0"
+jsonrpc-core = "18.0.0"
+jsonrpc-client-transports = { version = "18.0.0", features = ["http", "ipc"] }
 grr-plugin = {path = "../grr-plugin"}
 
 [build-dependencies]

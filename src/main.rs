@@ -32,16 +32,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ));
 
     log::info!("creating grr-plugin (go-plugin) Server...");
-    let mut plugin = Server::new(
+    let mut plugin = log_and_escalate!(Server::new(
         AVALANCHE_VM_PROTOCOL_VERSION,
         HandshakeConfig {
             magic_cookie_key: MAGIC_COOKIE_KEY.to_string(),
             magic_cookie_value: MAGIC_COOKIE_VALUE.to_string(),
         },
-    );
+    ));
+
+    // extract the JSON-RPC Broker
+    let jsonrpc_broker = plugin.jsonrpc_broker().await?;
 
     log::info!("Initialized the timestampvm logger");
-    let vm = VmServer::new(TimestampVm::new(plugin.get_conn_info_sender())?);
+    let vm = VmServer::new(TimestampVm::new(jsonrpc_broker)?);
     log::info!("TimestampVm Service Created");
 
     log_and_escalate!(plugin.serve(vm).await);

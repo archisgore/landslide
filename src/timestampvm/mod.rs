@@ -1,24 +1,26 @@
 //NOTE: I really don't understand protobufs. This code is clunky and I appreciate fixes/PRs.
 // I've had a distaste for RPC since CORBA and SOAP didn't make it better.
 mod block;
+mod static_handlers;
 
 use crate::error::LandslideError;
 use crate::function;
 
 use super::context::Context;
 use super::vm::vm_proto::*;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response};
 
 use block::{Block, State, Status as BlockStatus, StorageBlock};
 use semver::Version;
 
 use crate::id::Id;
 use crate::vm::vm_proto::vm_server::Vm;
-use grr_plugin::ConnInfo;
+use grr_plugin::log_and_escalate_status;
+use grr_plugin::JsonRpcBroker;
+use grr_plugin::Status;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use time::{Duration, OffsetDateTime};
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::RwLock;
 
 // DRY on accessing a mutable reference to interior state
@@ -64,31 +66,27 @@ pub enum Lock {
 // TimestampVM cannot mutably reference self on all its trait methods.
 // Instead it stores an instance of TimestampVmInterior, which is mutable, and can be
 // modified by the calls to TimestampVm's VM trait.
-#[derive(Debug)]
 struct TimestampVmInterior {
     ctx: Option<Context>,
     version: Version,
     state: State,
     verified_blocks: HashMap<Id, Block>,
-    conn_info_sender: UnboundedSender<Result<ConnInfo, Status>>,
+    jsonrpc_broker: JsonRpcBroker,
 }
 
-#[derive(Debug)]
 pub struct TimestampVm {
     interior: RwLock<TimestampVmInterior>,
 }
 
 impl TimestampVm {
-    pub fn new(
-        conn_info_sender: UnboundedSender<Result<ConnInfo, Status>>,
-    ) -> Result<TimestampVm, LandslideError> {
+    pub fn new(jsonrpc_broker: JsonRpcBroker) -> Result<TimestampVm, LandslideError> {
         Ok(TimestampVm {
             interior: RwLock::new(TimestampVmInterior {
                 ctx: None,
                 version: Version::new(1, 2, 1),
                 state: State::new(sled::open("block_store")?),
                 verified_blocks: HashMap::new(),
-                conn_info_sender,
+                jsonrpc_broker,
             }),
         })
     }
@@ -285,6 +283,7 @@ impl Vm for TimestampVm {
             u32status
         );
 
+        /*
         Ok(Response::new(InitializeResponse {
             last_accepted_id: Vec::from(labid.as_ref()),
             last_accepted_parent_id: Vec::from(sb.block.parent_id.as_ref()),
@@ -293,6 +292,16 @@ impl Vm for TimestampVm {
             timestamp: sb.block.timestamp,
             status: u32status,
         }))
+        */
+        Ok(Response::new(InitializeResponse {
+            last_accepted_id: Vec::new(),
+            last_accepted_parent_id: Vec::new(),
+            bytes: Vec::new(),
+            height: 2,
+            timestamp: Vec::new(),
+            status: u32status,
+        }))
+
     }
 
     async fn bootstrapping(&self, _request: Request<()>) -> Result<Response<()>, Status> {
@@ -316,15 +325,35 @@ impl Vm for TimestampVm {
         _request: Request<()>,
     ) -> Result<Response<CreateHandlersResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        mutable_interior!(self, interior);
 
-        let vm_api_service = Handler {
-            prefix: "".to_string(),
+        log::debug!(
+            "{}, ({},{}) - Creating a new JSON-RPC 2.0 server for handlers...",
+            function!(),
+            file!(),
+            line!()
+        );
+        let server_id = log_and_escalate_status!(
+            interior
+                .jsonrpc_broker
+                .new_server(static_handlers::new())
+                .await
+        );
+        let vm_static_api_service = Handler {
+            prefix: "/rusty_dynamic".to_string(),
             lock_options: Lock::NoLock as u32,
-            server: 10,
+            server: server_id,
         };
+        log::debug!("{}, ({},{}) - Created a new JSON-RPC 2.0 server for handlers with server_id: {}", function!(), file!(), line!(), server_id);
 
+        log::debug!(
+            "{}, ({},{}) - called - responding with API service.",
+            function!(),
+            file!(),
+            line!()
+        );
         Ok(Response::new(CreateHandlersResponse {
-            handlers: vec![vm_api_service],
+            handlers: vec![vm_static_api_service],
         }))
     }
 
@@ -334,13 +363,33 @@ impl Vm for TimestampVm {
         _request: Request<()>,
     ) -> Result<Response<CreateStaticHandlersResponse>, Status> {
         log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        mutable_interior!(self, interior);
 
+        log::debug!(
+            "{}, ({},{}) - Creating a new JSON-RPC 2.0 server for static handlers...",
+            function!(),
+            file!(),
+            line!()
+        );
+        let server_id = log_and_escalate_status!(
+            interior
+                .jsonrpc_broker
+                .new_server(static_handlers::new())
+                .await
+        );
         let vm_static_api_service = Handler {
-            prefix: "".to_string(),
+            prefix: "/rusty_static".to_string(),
             lock_options: Lock::NoLock as u32,
-            server: 50223,
+            server: server_id,
         };
+        log::debug!("{}, ({},{}) - Created a new JSON-RPC 2.0 server for static handlers with server_id: {}", function!(), file!(), line!(), server_id);
 
+        log::debug!(
+            "{}, ({},{}) - called - responding with static API service.",
+            function!(),
+            file!(),
+            line!()
+        );
         Ok(Response::new(CreateStaticHandlersResponse {
             handlers: vec![vm_static_api_service],
         }))
