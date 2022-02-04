@@ -1,4 +1,5 @@
 // Common modules required by any VM
+pub mod appsender;
 pub mod context;
 pub mod error;
 pub mod id;

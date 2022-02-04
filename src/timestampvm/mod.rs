@@ -1,6 +1,6 @@
 //NOTE: I really don't understand protobufs. This code is clunky and I appreciate fixes/PRs.
 // I've had a distaste for RPC since CORBA and SOAP didn't make it better.
-mod block;
+mod state;
 mod static_handlers;
 
 use crate::error::LandslideError;
@@ -8,14 +8,15 @@ use crate::function;
 
 use super::context::Context;
 use super::proto::vm_proto::*;
+use std::collections::BTreeMap;
 use tonic::{Request, Response};
 
-use block::{Block, State, Status as BlockStatus, StorageBlock};
 use semver::Version;
+use state::{Block, State, Status as BlockStatus, StorageBlock, BLOCK_DATA_LEN};
 
 use super::error::into_status;
 use super::log_and_escalate;
-use crate::id::Id;
+use crate::id::{Id, ZERO_ID};
 use crate::proto::vm_proto::vm_server::Vm;
 use grr_plugin::log_and_escalate_status;
 use grr_plugin::JsonRpcBroker;
@@ -23,8 +24,33 @@ use grr_plugin::Status;
 use std::collections::HashMap;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::RwLock;
+use tonic::transport::Channel;
 
-const BLOCK_DATA_LEN: usize = 32;
+use super::proto::appsender::app_sender_client::*;
+use super::proto::appsender::*;
+
+use super::proto::rpcdb::database_client::*;
+use super::proto::rpcdb::*;
+
+use super::proto::messenger::messenger_client::*;
+use super::proto::messenger::*;
+
+use super::proto::gsubnetlookup::subnet_lookup_client::*;
+use super::proto::gsubnetlookup::*;
+
+use super::proto::gsharedmemory::shared_memory_client::*;
+use super::proto::gsharedmemory::*;
+
+use super::proto::gkeystore::keystore_client::*;
+use super::proto::gkeystore::*;
+
+use super::proto::ghttp::http_client::*;
+use super::proto::ghttp::*;
+
+use super::proto::galiasreader::alias_reader_client::*;
+use super::proto::galiasreader::*;
+
+const LOG_PREFIX: &str = "TimestampVm:: ";
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
 // To get a u32 representation of this, just pick any one variant 'as u32'. For example:
@@ -41,9 +67,21 @@ pub enum Lock {
 struct TimestampVmInterior {
     ctx: Option<Context>,
     version: Version,
-    state: Option<State>,
-    verified_blocks: HashMap<Id, Block>,
     jsonrpc_broker: JsonRpcBroker,
+
+    // These get initialized during the Initialize RPC call.
+    state: Option<State>,
+    versioned_db_clients: Option<BTreeMap<Version, DatabaseClient<Channel>>>,
+    engine_client: Option<MessengerClient<Channel>>,
+    keystore_client: Option<KeystoreClient<Channel>>,
+    shared_memory_client: Option<SharedMemoryClient<Channel>>,
+    bc_lookup_client: Option<AliasReaderClient<Channel>>,
+    sn_lookup_client: Option<SubnetLookupClient<Channel>>,
+    appsender_client: Option<AppSenderClient<Channel>>,
+
+    // These are used throughout the function
+    verified_blocks: HashMap<Id, Block>,
+    preferred_block_id: Option<Id>,
 }
 
 pub struct TimestampVm {
@@ -56,37 +94,96 @@ impl TimestampVm {
             interior: RwLock::new(TimestampVmInterior {
                 ctx: None,
                 version: Version::new(1, 2, 1),
-                state: None,
-                verified_blocks: HashMap::new(),
                 jsonrpc_broker,
+
+                state: None,
+                versioned_db_clients: None,
+                engine_client: None,
+                keystore_client: None,
+                shared_memory_client: None,
+                bc_lookup_client: None,
+                sn_lookup_client: None,
+                appsender_client: None,
+
+                verified_blocks: HashMap::new(),
+                preferred_block_id: None,
             }),
         })
     }
 
-    async fn init_genessis(&self, genesis_bytes: &[u8]) -> Result<(), Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
-
-        let mut writable_interor = self.interior.write().await;
-        let state = writable_interor
+    async fn accept_block(
+        writable_interior: &mut TimestampVmInterior,
+        mut sb: StorageBlock,
+    ) -> Result<(), LandslideError> {
+        let state = writable_interior
             .state
             .as_mut()
             .ok_or(LandslideError::StateNotInitialized)
             .map_err(into_status)?;
 
-        if state.is_state_initialized().map_err(into_status)? {
+        sb.status = BlockStatus::Accepted;
+        let bid = sb.block.id()?;
+
+        state.put_block(sb).await?;
+
+        state.set_last_accepted_block_id(&bid).await?;
+
+        writable_interior.verified_blocks.remove(&bid);
+
+        Ok(())
+    }
+
+    async fn init_genessis(
+        writable_interior: &mut TimestampVmInterior,
+        genesis_bytes: &[u8],
+    ) -> Result<(), LandslideError> {
+        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+
+        let state = writable_interior
+            .state
+            .as_mut()
+            .ok_or(LandslideError::StateNotInitialized)
+            .map_err(into_status)?;
+
+        if state.is_state_initialized().await.map_err(into_status)? {
             // State is already initialized - no need to init genessis block
             return Ok(());
         }
 
-        if genesis_bytes.len() != BLOCK_DATA_LEN {
-            return Err(Status::unknown(format!(
-                "Genesis data byte length {} mismatches the expected block byte length of {}",
+        if genesis_bytes.len() > BLOCK_DATA_LEN {
+            return Err(LandslideError::Generic(format!(
+                "Genesis data byte length {} is greater than the expected block byte length of {}",
                 genesis_bytes.len(),
                 BLOCK_DATA_LEN
             )));
         }
+        let mut padded_genesis_data = Vec::with_capacity(BLOCK_DATA_LEN);
+        padded_genesis_data.extend_from_slice(genesis_bytes);
+        // resize to capacity with 0 filler bytes
+        padded_genesis_data.resize(BLOCK_DATA_LEN - genesis_bytes.len(), 0);
+
+        let genesis_storage_block = StorageBlock::new(
+            ZERO_ID,
+            0,
+            padded_genesis_data,
+            OffsetDateTime::from_unix_timestamp(0)?,
+        )?;
+        state.put_block(genesis_storage_block.clone()).await?;
+        Self::accept_block(writable_interior, genesis_storage_block).await?;
+
+        // reacquire state since we need to release writable_interior to pass into accept_block
+        let state = writable_interior
+            .state
+            .as_mut()
+            .ok_or(LandslideError::StateNotInitialized)
+            .map_err(into_status)?;
+        state.set_state_initialized().await?;
 
         Ok(())
+    }
+
+    async fn set_preference(writable_interior: &mut TimestampVmInterior, preferred_block_id: Id) {
+        writable_interior.preferred_block_id = Some(preferred_block_id)
     }
 
     // Verify returns nil iff this block is valid.
@@ -100,15 +197,7 @@ impl TimestampVm {
             .ok_or(LandslideError::StateNotInitialized)?;
 
         let bid = block.id()?;
-        let parent_sb = match state.get_block(&block.parent_id)? {
-            Some(pb) => pb,
-            None => {
-                return Err(LandslideError::NoParentBlock {
-                    block_id: bid,
-                    parent_block_id: block.parent_id,
-                })
-            }
-        };
+        let parent_sb = state.get_block(&block.parent_id.as_ref()).await?;
 
         // Ensure [b]'s height comes right after its parent's height
         if parent_sb.block.height + 1 != block.height {
@@ -118,10 +207,10 @@ impl TimestampVm {
             });
         }
 
-        let bts = block.timestamp()?;
-        let pbts = parent_sb.block.timestamp()?;
+        let bts = block.timestamp_as_offsetdatetime()?;
+        let pbts = parent_sb.block.timestamp_as_offsetdatetime()?;
         // Ensure [b]'s timestamp is after its parent's timestamp.
-        if block.timestamp()? < parent_sb.block.timestamp()? {
+        if bts < pbts {
             return Err(LandslideError::Generic(format!("The current block {}'s  timestamp {}, is before the parent block {}'s timestamp {}, which is invalid for a Blockchain.", bid, bts, block.parent_id, pbts)));
         }
 
@@ -147,33 +236,9 @@ impl TimestampVm {
         Ok(())
     }
 
-    // Accept sets this block's status to Accepted and sets lastAccepted to this
-    // block's ID and saves this info to b.vm.DB
-    async fn accept(&self, block: Block) -> Result<(), LandslideError> {
-        let mut writable_interor = self.interior.write().await;
-        let state = writable_interor
-            .state
-            .as_mut()
-            .ok_or(LandslideError::StateNotInitialized)?;
-
-        let sb = StorageBlock {
-            block,
-            status: BlockStatus::Accepted,
-        };
-
-        let block_id = sb.block.id()?;
-
-        // Persist data
-        state.put_block(sb)?;
-
-        state.set_last_accepted_block_id(&block_id)?;
-
-        Ok(())
-    }
-
     // Reject sets this block's status to Rejected and saves the status in state
     // Recall that b.vm.DB.Commit() must be called to persist to the DB
-    async fn reject(&self, block: Block) -> Result<(), LandslideError> {
+    async fn reject_block(&self, block: Block) -> Result<(), LandslideError> {
         let mut writable_interor = self.interior.write().await;
         let state = writable_interor
             .state
@@ -188,7 +253,7 @@ impl TimestampVm {
         let _block_id = sb.block.id()?;
 
         // Persist data
-        state.put_block(sb)?;
+        state.put_block(sb).await?;
 
         Ok(())
     }
@@ -217,25 +282,23 @@ impl Vm for TimestampVm {
         &self,
         request: Request<InitializeRequest>,
     ) -> Result<Response<InitializeResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("{}Initialize called", LOG_PREFIX);
         let mut writable_interior = self.interior.write().await;
 
-        log::info!("TimestampVm::Initialize Calling Version...");
+        log::info!("{}Initialize Calling Version...", LOG_PREFIX);
 
         let version = log_and_escalate!(
             Self::version_on_readable_interior(&writable_interior, Request::new(())).await
         );
 
-        log::info!("TimestampVm::Initialize obtained VM version: {:?}", version);
+        log::info!(
+            "{}Initialize obtained VM version: {:?}",
+            LOG_PREFIX,
+            version
+        );
 
         let ir = request.into_inner();
-        log::info!(
-            "{}, ({},{}) - Request: {:?}",
-            function!(),
-            file!(),
-            line!(),
-            ir
-        );
+        log::trace!("{}, Full Request: {:?}", LOG_PREFIX, ir,);
 
         writable_interior.ctx = Some(Context {
             network_id: ir.network_id,
@@ -246,11 +309,105 @@ impl Vm for TimestampVm {
             x_chain_id: ir.x_chain_id,
             avax_asset_id: ir.avax_asset_id,
         });
+        log::info!("{}Initialize - setup context from genesis data", LOG_PREFIX);
 
-        log::info!("TimestampVm::Initialize setup context from genesis data");
+        let mut versioned_db_clients: BTreeMap<Version, DatabaseClient<Channel>> = BTreeMap::new();
+        for db_server in ir.db_servers.iter() {
+            let ver_without_v = db_server.version.trim_start_matches("v");
+            let version = log_and_escalate!(Version::parse(&ver_without_v).map_err(into_status));
+            let conn = log_and_escalate!(writable_interior
+                .jsonrpc_broker
+                .dial_to_host_service(db_server.db_server)
+                .await
+                .map_err(into_status));
+            let db_client = DatabaseClient::new(conn);
+            versioned_db_clients.insert(version, db_client);
+            log::info!(
+                "{}Initialize - initialized versioned db client for server: {:?}",
+                LOG_PREFIX,
+                db_server
+            );
+        }
+        writable_interior.versioned_db_clients = Some(versioned_db_clients);
+        log::info!(
+            "{}Initialize - initialized all versioned db clients",
+            LOG_PREFIX
+        );
 
-        log_and_escalate!(self.init_genessis(ir.genesis_bytes.as_ref()).await);
+        let conn = log_and_escalate!(writable_interior
+            .jsonrpc_broker
+            .dial_to_host_service(ir.engine_server)
+            .await
+            .map_err(into_status));
+        writable_interior.engine_client = Some(MessengerClient::new(conn));
+        log::info!(
+            "{}Initialize - initialized messenger (engine server) client",
+            LOG_PREFIX
+        );
 
+        let conn = log_and_escalate!(writable_interior
+            .jsonrpc_broker
+            .dial_to_host_service(ir.keystore_server)
+            .await
+            .map_err(into_status));
+        writable_interior.keystore_client = Some(KeystoreClient::new(conn));
+        log::info!("{}Initialize - initialized keystore client", LOG_PREFIX);
+
+        let conn = log_and_escalate!(writable_interior
+            .jsonrpc_broker
+            .dial_to_host_service(ir.shared_memory_server)
+            .await
+            .map_err(into_status));
+        writable_interior.shared_memory_client = Some(SharedMemoryClient::new(conn));
+        log::info!(
+            "{}Initialize - initialized shared memory client",
+            LOG_PREFIX
+        );
+
+        let conn = log_and_escalate!(writable_interior
+            .jsonrpc_broker
+            .dial_to_host_service(ir.bc_lookup_server)
+            .await
+            .map_err(into_status));
+        writable_interior.bc_lookup_client = Some(AliasReaderClient::new(conn));
+        log::info!("{}Initialize - initialized alias reader client", LOG_PREFIX);
+
+        let conn = log_and_escalate!(writable_interior
+            .jsonrpc_broker
+            .dial_to_host_service(ir.sn_lookup_server)
+            .await
+            .map_err(into_status));
+        writable_interior.sn_lookup_client = Some(SubnetLookupClient::new(conn));
+        log::info!(
+            "{}Initialize - initialized subnet lookup client",
+            LOG_PREFIX
+        );
+
+        let conn = log_and_escalate!(writable_interior
+            .jsonrpc_broker
+            .dial_to_host_service(ir.app_sender_server)
+            .await
+            .map_err(into_status));
+        writable_interior.appsender_client = Some(AppSenderClient::new(conn));
+        log::info!("{}Initialize - initialized app sender client", LOG_PREFIX);
+
+        if let Some(versioned_db_clients) = writable_interior.versioned_db_clients.as_ref() {
+            if versioned_db_clients.len() <= 0 {
+                return Err(Status::unknown("zero versioned_db_clients were found. Unable to proceed without a versioned database."));
+            }
+            if let Some(db_client) = versioned_db_clients.values().rev().next() {
+                let state = State::new(db_client.clone());
+                writable_interior.state = Some(state);
+            } else {
+                return Err(Status::unknown("database client not found, when length was verified to be > 0 a little earlier."));
+            }
+        } else {
+            return Err(Status::unknown("versioned_db_clients was None, when it was just set in this same method a little bit before."));
+        }
+
+        log_and_escalate_status!(
+            TimestampVm::init_genessis(&mut writable_interior, ir.genesis_bytes.as_ref()).await
+        );
         log::info!("TimestampVm::Initialize genesis initialized");
 
         let state = writable_interior
@@ -258,30 +415,17 @@ impl Vm for TimestampVm {
             .as_mut()
             .ok_or(LandslideError::StateNotInitialized)
             .map_err(into_status)?;
-        let labid = match log_and_escalate!(state.get_last_accepted_block_id().map_err(into_status))
-        {
-            Some(l) => l,
-            None => {
-                return Err(Status::unknown(
-                    "No last accepted block id found. This was not expected.",
-                ))
-            }
-        };
+        let labid = log_and_escalate!(state
+            .get_last_accepted_block_id()
+            .await
+            .map_err(into_status));
 
         log::info!(
             "TimestampVm::Initialize obtained last accepted block id: {}",
             labid
         );
 
-        let sb = match state.get_block(&labid).map_err(into_status)? {
-            Some(sb) => sb,
-            None => {
-                return Err(Status::unknown(format!(
-                    "No block found for id {}. This was not expected.",
-                    labid
-                )))
-            }
-        };
+        let sb = log_and_escalate!(state.get_block(&labid.as_ref()).await.map_err(into_status));
 
         let u32status = sb.status as u32;
 
@@ -289,6 +433,8 @@ impl Vm for TimestampVm {
             "TimestampVm::Initialize obtained last accepted block with status: {}",
             u32status
         );
+
+        Self::set_preference(&mut writable_interior, labid.clone()).await;
 
         Ok(Response::new(InitializeResponse {
             last_accepted_id: Vec::from(labid.as_ref()),
@@ -336,7 +482,7 @@ impl Vm for TimestampVm {
                 .await
         );
         let vm_static_api_service = Handler {
-            prefix: "/rusty_dynamic".to_string(),
+            prefix: "".to_string(),
             lock_options: Lock::NoLock as u32,
             server: server_id,
         };
@@ -380,7 +526,7 @@ impl Vm for TimestampVm {
                 .await
         );
         let vm_static_api_service = Handler {
-            prefix: "/rusty_static".to_string(),
+            prefix: "".to_string(),
             lock_options: Lock::NoLock as u32,
             server: server_id,
         };

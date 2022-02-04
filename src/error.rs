@@ -1,6 +1,7 @@
 use super::id::Id;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
+use tonic::Status;
 
 #[derive(Debug)]
 pub enum LandslideError {
@@ -11,13 +12,13 @@ pub enum LandslideError {
     NoTCPPortAvailable,
     GRPCHandshakeMagicCookieValueMismatch,
     StateNotInitialized,
-    SledError(sled::Error),
     FromHexError(hex::FromHexError),
     SerdeJsonError(serde_json::Error),
     StdIoError(std::io::Error),
     SetLoggerError(log::SetLoggerError),
     Generic(String),
     TonicTransportError(tonic::transport::Error),
+    Status(Status),
     ParentBlockHeightUnexpected {
         block_height: u64,
         parent_block_height: u64,
@@ -50,8 +51,8 @@ macro_rules! function {
     }};
 }
 
-pub fn into_status(err: LandslideError) -> tonic::Status {
-    tonic::Status::unknown(format!("landslide error: {:?}", err))
+pub fn into_status<E: Error>(err: E) -> tonic::Status {
+    tonic::Status::unknown(format!("{:?}", err))
 }
 
 impl Display for LandslideError {
@@ -63,7 +64,6 @@ impl Display for LandslideError {
             ),
             Self::GRPCHandshakeMagicCookieValueMismatch => write!(f, "This executable is meant to be a go-plugin to other processes. Do not run this directly. The Magic Handshake failed."),
             Self::StateNotInitialized => write!(f, "The VM has not yet been initialized, and it's internal state is empty."),
-            Self::SledError(e) => write!(f, "An error occurred in the Sled database: {:?}", e),
             Self::FromHexError(e) => write!(f, "Unable to parse bytes from hexadecimal: {:?}", e),
             Self::SerdeJsonError(e) => write!(
                 f,
@@ -71,6 +71,7 @@ impl Display for LandslideError {
                 e
             ),
             Self::Generic(s) => write!(f, "{}", s),
+            Self::Status(s) => write!(f, "{}", s),
             Self::StdIoError(e) => write!(f, "Error with IO: {:?}", e),
             Self::SetLoggerError(e) => write!(f, "Error setting logger: {:?}", e),
             Self::TonicTransportError(e) => write!(f, "Error with tonic (gRPC) transport: {:?}", e),
@@ -85,12 +86,6 @@ impl Display for LandslideError {
 }
 
 impl Error for LandslideError {}
-
-impl From<sled::Error> for LandslideError {
-    fn from(err: sled::Error) -> Self {
-        Self::SledError(err)
-    }
-}
 
 impl From<hex::FromHexError> for LandslideError {
     fn from(err: hex::FromHexError) -> Self {
@@ -125,5 +120,11 @@ impl From<tonic::transport::Error> for LandslideError {
 impl From<time::error::ComponentRange> for LandslideError {
     fn from(err: time::error::ComponentRange) -> Self {
         Self::TimeErrorComponentRange(err)
+    }
+}
+
+impl From<Status> for LandslideError {
+    fn from(s: Status) -> Self {
+        Self::Status(s)
     }
 }

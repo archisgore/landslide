@@ -13,35 +13,35 @@ pub mod io {
 }
 
 pub mod appsender {
-    tonic::include_proto!("appsender");
+    tonic::include_proto!("appsenderproto");
 }
 
 pub mod galiasreader {
-    tonic::include_proto!("galiasreader");
+    tonic::include_proto!("galiasreaderproto");
 }
 
 pub mod ghttp {
-    tonic::include_proto!("ghttp");
+    tonic::include_proto!("ghttpproto");
 }
 
 pub mod gkeystore {
-    tonic::include_proto!("gkeystore");
+    tonic::include_proto!("gkeystoreproto");
 }
 
 pub mod gsharedmemory {
-    tonic::include_proto!("gsharedmemory");
+    tonic::include_proto!("gsharedmemoryproto");
 }
 
 pub mod gsubnetlookup {
-    tonic::include_proto!("gsubnetlookup");
+    tonic::include_proto!("gsubnetlookupproto");
 }
 
 pub mod messenger {
-    tonic::include_proto!("messenger");
+    tonic::include_proto!("messengerproto");
 }
 
 pub mod rpcdb {
-    tonic::include_proto!("rpcdb");
+    tonic::include_proto!("rpcdbproto");
 }
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
