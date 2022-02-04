@@ -10,10 +10,11 @@ mod timestampvm;
 
 use grr_plugin::{HandshakeConfig, Server};
 use proto::vm_proto::vm_server::VmServer;
-use simplelog::{Config, WriteLogger};
+use std::env;
 use std::error::Error;
-use std::fs::File;
 use timestampvm::TimestampVm;
+
+const LANDSLIDE_LOG_CONFIG_FILE: &str = "LANDSLIDE_LOG_CONFIG_FILE";
 
 //https://github.com/ava-labs/avalanchego/blob/master/vms/rpcchainvm/vm.go#L19
 const AVALANCHE_VM_PROTOCOL_VERSION: u32 = 9;
@@ -24,12 +25,7 @@ const MAGIC_COOKIE_VALUE: &str = "dynamic";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let logfile = log_and_escalate!(File::create("/tmp/landslide.log"));
-    log_and_escalate!(WriteLogger::init(
-        log::LevelFilter::Info,
-        Config::default(),
-        logfile
-    ));
+    init_logger();
 
     log::info!("creating grr-plugin (go-plugin) Server...");
     let mut plugin = log_and_escalate!(Server::new(
@@ -52,4 +48,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     log_and_escalate!(plugin.serve(vm).await);
 
     Ok(())
+}
+
+fn init_logger() {
+    // is there a RUST_LOG environment variable?
+    if let Ok(log_config_file_path) = env::var(LANDSLIDE_LOG_CONFIG_FILE) {
+        log4rs::init_file(log_config_file_path, Default::default()).unwrap();
+    } else {
+        // else construct a default logger
+        let stderr = log4rs::append::console::ConsoleAppender::builder()
+            .target(log4rs::append::console::Target::Stderr)
+            .build();
+        let config = log4rs::Config::builder()
+            .appender(
+                log4rs::config::runtime::Appender::builder().build("stderr", Box::new(stderr)),
+            )
+            .build(
+                log4rs::config::runtime::Root::builder()
+                    .appender("stderr")
+                    .build(log::LevelFilter::Info),
+            )
+            .unwrap();
+
+        log4rs::init_config(config).unwrap();
+    }
 }

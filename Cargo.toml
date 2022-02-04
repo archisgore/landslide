@@ -24,7 +24,7 @@ hmac-sha256 = "1.1"
 hex = "0.4"
 zerocopy = "0.6"
 log = "0.4"
-simplelog = "0.11.2"
+log4rs = { version = "1.0" }
 tempfile = "3.3"
 async-stream = "0.3"
 backtrace = "0.3"
@@ -41,7 +41,7 @@ byteorder = "1.4.3"
 num = "0.4"
 num-derive = "0.3"
 num-traits = "0.2"
-grr-plugin = "0.1.2"
+grr-plugin = "0.1.4"
 
 [build-dependencies]
 tonic-build = "0.6"

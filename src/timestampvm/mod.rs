@@ -4,7 +4,6 @@ mod state;
 mod static_handlers;
 
 use crate::error::LandslideError;
-use crate::function;
 
 use super::context::Context;
 use super::proto::vm_proto::*;
@@ -113,12 +112,16 @@ impl TimestampVm {
 
         sb.status = BlockStatus::Accepted;
         let bid = sb.block.id()?;
+        log::info!("Accepting block with id: {}", bid);
 
         state.put_block(sb).await?;
+        log::info!("Put accepted block into database with id: {}", bid);
 
         state.set_last_accepted_block_id(&bid).await?;
+        log::info!("Setting last accepted block id in database to: {}", bid);
 
         writable_interior.verified_blocks.remove(&bid);
+        log::info!("Removing from verified blocks, since it is now accepted, the block id: {}", bid);
 
         Ok(())
     }
@@ -127,7 +130,7 @@ impl TimestampVm {
         writable_interior: &mut TimestampVmInterior,
         genesis_bytes: &[u8],
     ) -> Result<(), LandslideError> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::trace!("initialize called");
 
         let state = writable_interior
             .state
@@ -135,31 +138,54 @@ impl TimestampVm {
             .ok_or(LandslideError::StateNotInitialized)
             .map_err(into_status)?;
 
-        if state.is_state_initialized().await.map_err(into_status)? {
+        if state.is_state_initialized().await? {
             // State is already initialized - no need to init genessis block
+            log::info!("state is already initialized. No further work to do.");
             return Ok(());
         }
 
         if genesis_bytes.len() > BLOCK_DATA_LEN {
             return Err(LandslideError::Generic(format!(
-                "Genesis data byte length {} is greater than the expected block byte length of {}",
+                "Genesis data byte length {} is greater than the expected block byte length of {}. Genesis bytes: {:#?} as a string: {}",
                 genesis_bytes.len(),
-                BLOCK_DATA_LEN
+                BLOCK_DATA_LEN,
+                genesis_bytes,
+                String::from_utf8(Vec::from(genesis_bytes)).unwrap(),
             )));
         }
         let mut padded_genesis_data = Vec::with_capacity(BLOCK_DATA_LEN);
         padded_genesis_data.extend_from_slice(genesis_bytes);
         // resize to capacity with 0 filler bytes
-        padded_genesis_data.resize(BLOCK_DATA_LEN - genesis_bytes.len(), 0);
+        padded_genesis_data.resize(BLOCK_DATA_LEN, 0);
 
+        log::info!(
+            "Genesis block created with length {} by padding up from data length {}",
+            padded_genesis_data.len(),
+            genesis_bytes.len()
+        );
         let genesis_storage_block = StorageBlock::new(
             ZERO_ID,
             0,
             padded_genesis_data,
             OffsetDateTime::from_unix_timestamp(0)?,
         )?;
+
+        let genesis_block_id = genesis_storage_block.block.id()?;
+
+        log::info!(
+            "Genesis storage block created with Id: {}",
+            genesis_block_id
+        );
         state.put_block(genesis_storage_block.clone()).await?;
+        log::info!(
+            "Genesis storage block with Id {} put in database successfully.",
+            genesis_block_id
+        );
         Self::accept_block(writable_interior, genesis_storage_block).await?;
+        log::info!(
+            "Genesis storage block with Id {} was accepted by this node.",
+            genesis_block_id
+        );
 
         // reacquire state since we need to release writable_interior to pass into accept_block
         let state = writable_interior
@@ -168,6 +194,7 @@ impl TimestampVm {
             .ok_or(LandslideError::StateNotInitialized)
             .map_err(into_status)?;
         state.set_state_initialized().await?;
+        log::info!("State set to initialized, so it won't hapen again.");
 
         Ok(())
     }
@@ -187,7 +214,7 @@ impl TimestampVm {
             .ok_or(LandslideError::StateNotInitialized)?;
 
         let bid = block.id()?;
-        let parent_sb = state.get_block(block.parent_id.as_ref()).await?.ok_or(
+        let parent_sb = state.get_block(block.parent_id.as_ref()).await?.ok_or_else(||
             LandslideError::Generic(format!("TimestampVm::verify_block - Parent Block ID {} was not found in the database for Block being verified with Id {}", block.parent_id, bid)))?;
 
         // Ensure [b]'s height comes right after its parent's height
@@ -254,13 +281,7 @@ impl TimestampVm {
         _request: Request<()>,
     ) -> Result<Response<VersionResponse>, Status> {
         let version = readable_interior.version.to_string();
-        log::info!(
-            "{}, ({},{}) - responding with version {}",
-            function!(),
-            file!(),
-            line!(),
-            version
-        );
+        log::info!("responding with version {}", version);
         Ok(Response::new(VersionResponse {
             version: readable_interior.version.to_string(),
         }))
@@ -410,7 +431,7 @@ impl Vm for TimestampVm {
             .get_last_accepted_block_id()
             .await
             .map_err(into_status))
-            .ok_or(Status::unknown("TimestampVm::initialize - unable to get last accepted block id from the database. This is unusual since the init_genesis() call made within this function a bit earlier, should have initialized the genesis block at least.".to_string()))?;
+            .ok_or_else(||Status::unknown("TimestampVm::initialize - unable to get last accepted block id from the database. This is unusual since the init_genesis() call made within this function a bit earlier, should have initialized the genesis block at least.".to_string()))?;
 
         log::info!(
             "TimestampVm::Initialize obtained last accepted block id: {}",
@@ -418,12 +439,13 @@ impl Vm for TimestampVm {
         );
 
         let sb = log_and_escalate!(state.get_block(labid.as_ref()).await.map_err(into_status))
-        .ok_or(Status::unknown(format!("The storage block with Id {} was not found in the database, which is unusual considering this id was obtained from the database as the last accepted block's id.", labid)))?;
+        .ok_or_else(||Status::unknown(format!("The storage block with Id {} was not found in the database, which is unusual considering this id was obtained from the database as the last accepted block's id.", labid)))?;
 
         let u32status = sb.status as u32;
 
         log::info!(
-            "TimestampVm::Initialize obtained last accepted block with status: {}",
+            "TimestampVm::Initialize obtained last accepted block with status: {:?}(u32 value: {})",
+            sb.status,
             u32status
         );
 
@@ -440,17 +462,17 @@ impl Vm for TimestampVm {
     }
 
     async fn bootstrapping(&self, _request: Request<()>) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("bootstrapping called");
         Ok(Response::new(()))
     }
 
     async fn bootstrapped(&self, _request: Request<()>) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("bootstrapped called");
         Ok(Response::new(()))
     }
 
     async fn shutdown(&self, _request: Request<()>) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("shutdown called");
 
         Ok(Response::new(()))
     }
@@ -459,15 +481,10 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<CreateHandlersResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("create_handlers called");
         let mut writable_interor = self.interior.write().await;
 
-        log::debug!(
-            "{}, ({},{}) - Creating a new JSON-RPC 2.0 server for handlers...",
-            function!(),
-            file!(),
-            line!()
-        );
+        log::debug!("Creating a new JSON-RPC 2.0 server for handlers...",);
         let server_id = log_and_escalate_status!(
             writable_interor
                 .jsonrpc_broker
@@ -480,19 +497,11 @@ impl Vm for TimestampVm {
             server: server_id,
         };
         log::debug!(
-            "{}, ({},{}) - Created a new JSON-RPC 2.0 server for handlers with server_id: {}",
-            function!(),
-            file!(),
-            line!(),
+            "Created a new JSON-RPC 2.0 server for handlers with server_id: {}",
             server_id
         );
 
-        log::debug!(
-            "{}, ({},{}) - called - responding with API service.",
-            function!(),
-            file!(),
-            line!()
-        );
+        log::debug!("responding with API service.",);
         Ok(Response::new(CreateHandlersResponse {
             handlers: vec![vm_static_api_service],
         }))
@@ -503,15 +512,10 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<CreateStaticHandlersResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("create_static_handlers called");
         let mut writable_interor = self.interior.write().await;
 
-        log::debug!(
-            "{}, ({},{}) - Creating a new JSON-RPC 2.0 server for static handlers...",
-            function!(),
-            file!(),
-            line!()
-        );
+        log::debug!("Creating a new JSON-RPC 2.0 server for static handlers...",);
         let server_id = log_and_escalate_status!(
             writable_interor
                 .jsonrpc_broker
@@ -523,21 +527,19 @@ impl Vm for TimestampVm {
             lock_options: Lock::None as u32,
             server: server_id,
         };
-        log::debug!("{}, ({},{}) - Created a new JSON-RPC 2.0 server for static handlers with server_id: {}", function!(), file!(), line!(), server_id);
-
         log::debug!(
-            "{}, ({},{}) - called - responding with static API service.",
-            function!(),
-            file!(),
-            line!()
+            "Created a new JSON-RPC 2.0 server for static handlers with server_id: {}",
+            server_id
         );
+
+        log::debug!("responding with static API service.",);
         Ok(Response::new(CreateStaticHandlersResponse {
             handlers: vec![vm_static_api_service],
         }))
     }
 
     async fn connected(&self, _request: Request<ConnectedRequest>) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("connected called");
         Ok(Response::new(()))
     }
 
@@ -545,7 +547,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<DisconnectedRequest>,
     ) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("disconnected called");
         Ok(Response::new(()))
     }
 
@@ -553,7 +555,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<BuildBlockResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("build_block called");
         todo!()
     }
 
@@ -561,7 +563,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<ParseBlockRequest>,
     ) -> Result<Response<ParseBlockResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("parse_block called");
         todo!()
     }
 
@@ -569,7 +571,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<GetBlockRequest>,
     ) -> Result<Response<GetBlockResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("get_block called");
         todo!()
     }
 
@@ -577,12 +579,12 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<SetPreferenceRequest>,
     ) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("set_preference called");
         Ok(Response::new(()))
     }
 
     async fn health(&self, _request: Request<()>) -> Result<Response<HealthResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("health called");
         log::info!("TimestampVM: Health endpoint pinged; reporting healthy...");
         Ok(Response::new(HealthResponse {
             details: "All is well.".to_string(),
@@ -590,13 +592,13 @@ impl Vm for TimestampVm {
     }
 
     async fn version(&self, request: Request<()>) -> Result<Response<VersionResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("version called");
         let readable_interior = self.interior.read().await;
         Self::version_on_readable_interior(&readable_interior, request).await
     }
 
     async fn app_request(&self, _request: Request<AppRequestMsg>) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("app_request called");
         Ok(Response::new(()))
     }
 
@@ -604,7 +606,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<AppRequestFailedMsg>,
     ) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("app_request_failed called");
         Ok(Response::new(()))
     }
 
@@ -612,17 +614,17 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<AppResponseMsg>,
     ) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("app_response called");
         Ok(Response::new(()))
     }
 
     async fn app_gossip(&self, _request: Request<AppGossipMsg>) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("app_gossip called");
         Ok(Response::new(()))
     }
 
     async fn gather(&self, _request: Request<()>) -> Result<Response<GatherResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("gather called");
         todo!()
     }
 
@@ -630,7 +632,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BlockVerifyRequest>,
     ) -> Result<Response<BlockVerifyResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("block_verify called");
         todo!()
     }
 
@@ -638,7 +640,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BlockAcceptRequest>,
     ) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("block_accept called");
         Ok(Response::new(()))
     }
 
@@ -646,7 +648,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BlockRejectRequest>,
     ) -> Result<Response<()>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("block_reject called");
         Ok(Response::new(()))
     }
 
@@ -654,7 +656,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<GetAncestorsRequest>,
     ) -> Result<Response<GetAncestorsResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("get_ancestors called");
         todo!()
     }
 
@@ -662,7 +664,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BatchedParseBlockRequest>,
     ) -> Result<Response<BatchedParseBlockResponse>, Status> {
-        log::info!("{}, ({},{}) - called", function!(), file!(), line!());
+        log::info!("batched_parse_block called");
         todo!()
     }
 }

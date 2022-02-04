@@ -1,7 +1,7 @@
 // Copied from: https://github.com/ava-labs/timestampvm/blob/main/timestampvm/block.go
 
 use crate::error::LandslideError;
-use crate::id::Id;
+use crate::id::{Id, BYTE_LENGTH as ID_BYTE_LENGTH};
 use crate::proto::rpcdb::database_client::*;
 use crate::proto::rpcdb::*;
 use crate::proto::DatabaseError;
@@ -63,8 +63,8 @@ impl State {
         let dberr = DatabaseError::from_u32(get_response.err);
         match dberr {
             Some(DatabaseError::Closed) => Err(LandslideError::Generic(format!(
-                "DatabaseClient::get returned with error: {} which is Closed.",
-                get_response.err
+                "DatabaseClient::get returned with error: {:?}",
+                dberr
             ))),
             Some(DatabaseError::NotFound) => Ok(None),
             _ => Ok(Some(get_response.value)),
@@ -78,12 +78,12 @@ impl State {
         match dberr {
             Some(DatabaseError::None) => Ok(()),
             Some(DatabaseError::Closed) => Err(LandslideError::Generic(format!(
-                "DatabaseClient::put returned with error: {} which is Closed.",
-                put_response.err
+                "DatabaseClient::put returned with error: {:?}.",
+                dberr
             ))),
             Some(DatabaseError::NotFound) => Err(LandslideError::Generic(format!(
-                "DatabaseClient::put returned with error: {} which is NotFound.",
-                put_response.err
+                "DatabaseClient::put returned with error: {:?}.",
+                dberr
             ))),
             _ => Err(LandslideError::Generic(format!(
                 "DatabaseClient::put returned with unknown error: {}.",
@@ -99,12 +99,12 @@ impl State {
         match dberr {
             Some(DatabaseError::None) => Ok(()),
             Some(DatabaseError::Closed) => Err(LandslideError::Generic(format!(
-                "DatabaseClient::delete returned with error: {} which is Closed.",
-                delete_response.err
+                "DatabaseClient::delete returned with error: {:?}",
+                dberr
             ))),
             Some(DatabaseError::NotFound) => Err(LandslideError::Generic(format!(
-                "DatabaseClient::delete returned with error: {} which is NotFound.",
-                delete_response.err
+                "DatabaseClient::delete returned with error: {:?}",
+                dberr
             ))),
             _ => Err(LandslideError::Generic(format!(
                 "DatabaseClient::delete returned with unknown error: {}.",
@@ -142,12 +142,26 @@ impl State {
         let maybe_block_id_bytes = self.get(self.last_accepted_block_id_key.clone()).await?;
 
         Ok(match maybe_block_id_bytes {
-            Some(block_id_bytes) => Some(Id::new(block_id_bytes.as_ref())?),
+            Some(block_id_bytes) => {
+                if block_id_bytes.len() != ID_BYTE_LENGTH {
+                    let errmsg = format!("Id byte length was expected to be {}, but the database provided the last accepted id of length {}. The Id saved to the database is not the same structure as the one being retrieved into. This is a critical failure.", ID_BYTE_LENGTH, block_id_bytes.len());
+                    log::error!("{}", errmsg);
+                    return Err(LandslideError::Generic(errmsg));
+                }
+                let mut block_id_byte_array: [u8; ID_BYTE_LENGTH] = [0; ID_BYTE_LENGTH];
+                for (i, b) in block_id_bytes.into_iter().enumerate() {
+                    block_id_byte_array[i] = b;
+                }
+
+                log::info!("Getting last accepted block id bytes: {:?}", &block_id_byte_array);
+                Some(Id::from_bytes(block_id_byte_array)?)
+            },
             None => None,
         })
     }
 
     pub async fn set_last_accepted_block_id(&mut self, id: &Id) -> Result<(), LandslideError> {
+        log::info!("Setting last accepted block id bytes: {:?}", id.as_ref());
         self.put(
             self.last_accepted_block_id_key.clone(),
             Vec::from(id.as_ref()),
@@ -198,7 +212,7 @@ pub struct Block {
 impl Block {
     pub fn id(&self) -> Result<Id, LandslideError> {
         let block_bytes = serde_json::to_vec(&self)?;
-        let block_id = Id::new(&block_bytes)?;
+        let block_id = Id::generate(&block_bytes)?;
         Ok(block_id)
     }
 
@@ -262,7 +276,7 @@ impl StorageBlock {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum Status {
     Unknown,
     Processing,

@@ -1,0 +1,21 @@
+# A config file for log4rs: https://docs.rs/log4rs/latest/log4rs/
+# Use the environment variable: LANDSLIDE_LOG_CONFIG_FILE
+# to provide a path to this file to configure the landslide's logger
+
+
+# Scan this file for changes every 5 minutes
+refresh_rate: 5 minutes
+
+appenders:
+  logfile:
+    kind: file
+    path: "/tmp/landslide.log"
+    encoder:
+      pattern: "{d} - {M} {f}#{L} - {l}: {m}{n}"
+
+# Set the default logging level to "warn" and attach the "stdout" appender to the root
+root:
+  level: info
+  appenders:
+    - logfile
+

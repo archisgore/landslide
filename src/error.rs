@@ -31,7 +31,7 @@ macro_rules! log_and_escalate {
     ($e:expr) => {
         match $e {
             Err(err) => {
-                log::error!("{},({}:{}), {:?}", function!(), file!(), line!(), err);
+                log::error!("{:?}", err);
                 return Err(err.into());
             }
             Ok(o) => o,
@@ -40,15 +40,16 @@ macro_rules! log_and_escalate {
 }
 
 #[macro_export]
-macro_rules! function {
-    () => {{
-        fn f() {}
-        fn type_name_of<T>(_: T) -> &'static str {
-            std::any::type_name::<T>()
+macro_rules! log_and_escalate_status {
+    ($e:expr) => {
+        match $e {
+            Err(err) => {
+                log::error!("{:?}", err);
+                return Status::unknown(format!("{:?}", err));
+            }
+            Ok(o) => o,
         }
-        let name = type_name_of(f);
-        &name[..name.len() - 3]
-    }};
+    };
 }
 
 pub fn into_status<E: Error>(err: E) -> tonic::Status {
