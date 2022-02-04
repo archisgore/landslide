@@ -44,11 +44,28 @@ pub mod rpcdb {
     tonic::include_proto!("rpcdbproto");
 }
 
+use num_derive::FromPrimitive;
+
+// Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/message.go#L13
+#[derive(FromPrimitive)]
+enum Message {
+    PendingTransactions = 0,
+}
+
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
 // To get a u32 representation of this, just pick any one variant 'as u32'. For example:
 //     lock: Lock::WriteLock as u32
+#[derive(FromPrimitive)]
 pub enum Lock {
-    WriteLock,
+    WriteLock = 0,
     ReadLock,
     NoLock,
+}
+
+// https://github.com/ava-labs/avalanchego/blob/master/database/rpcdb/errors.go
+#[derive(FromPrimitive)]
+pub enum DatabaseError {
+    None = 0,
+    Closed = 1,
+    NotFound = 2,
 }

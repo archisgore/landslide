@@ -38,6 +38,9 @@ jsonrpc-derive = "18.0.0"
 jsonrpc-core = "18.0.0"
 jsonrpc-client-transports = { version = "18.0.0", features = ["http", "ipc"] }
 byteorder = "1.4.3"
+num = "0.4"
+num-derive = "0.3"
+num-traits = "0.2"
 grr-plugin = "0.1.2"
 
 [build-dependencies]

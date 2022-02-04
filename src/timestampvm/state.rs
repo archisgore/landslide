@@ -4,6 +4,8 @@ use crate::error::LandslideError;
 use crate::id::Id;
 use crate::proto::rpcdb::database_client::*;
 use crate::proto::rpcdb::*;
+use crate::proto::DatabaseError;
+use num::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use std::convert::AsRef;
 use std::convert::TryInto;
@@ -55,119 +57,119 @@ impl State {
         Ok(self.db.close(CloseRequest {}).await?)
     }
 
-    pub async fn get_block(&mut self, block_id: &[u8]) -> Result<StorageBlock, LandslideError> {
-        let key = Self::prefix(BLOCK_STATE_PREFIX, block_id);
+    pub async fn get(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, LandslideError> {
         let get_response = self.db.get(GetRequest { key }).await?.into_inner();
 
-        if get_response.err != 0 {
-            return Err(LandslideError::Generic(format!(
-                "DatabaseClient::get returned with error: {}",
+        let dberr = DatabaseError::from_u32(get_response.err);
+        match dberr {
+            Some(DatabaseError::Closed) => Err(LandslideError::Generic(format!(
+                "DatabaseClient::get returned with error: {} which is Closed.",
                 get_response.err
-            )));
+            ))),
+            Some(DatabaseError::NotFound) => Ok(None),
+            _ => Ok(Some(get_response.value)),
         }
+    }
 
-        let sb: StorageBlock = serde_json::from_slice(&get_response.value)?;
+    pub async fn put(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), LandslideError> {
+        let put_response = self.db.put(PutRequest { key, value }).await?.into_inner();
 
-        Ok(sb)
+        let dberr = DatabaseError::from_u32(put_response.err);
+        match dberr {
+            Some(DatabaseError::None) => Ok(()),
+            Some(DatabaseError::Closed) => Err(LandslideError::Generic(format!(
+                "DatabaseClient::put returned with error: {} which is Closed.",
+                put_response.err
+            ))),
+            Some(DatabaseError::NotFound) => Err(LandslideError::Generic(format!(
+                "DatabaseClient::put returned with error: {} which is NotFound.",
+                put_response.err
+            ))),
+            _ => Err(LandslideError::Generic(format!(
+                "DatabaseClient::put returned with unknown error: {}.",
+                put_response.err
+            ))),
+        }
+    }
+
+    pub async fn delete(&mut self, key: Vec<u8>) -> Result<(), LandslideError> {
+        let delete_response = self.db.delete(DeleteRequest { key }).await?.into_inner();
+
+        let dberr = DatabaseError::from_u32(delete_response.err);
+        match dberr {
+            Some(DatabaseError::None) => Ok(()),
+            Some(DatabaseError::Closed) => Err(LandslideError::Generic(format!(
+                "DatabaseClient::delete returned with error: {} which is Closed.",
+                delete_response.err
+            ))),
+            Some(DatabaseError::NotFound) => Err(LandslideError::Generic(format!(
+                "DatabaseClient::delete returned with error: {} which is NotFound.",
+                delete_response.err
+            ))),
+            _ => Err(LandslideError::Generic(format!(
+                "DatabaseClient::delete returned with unknown error: {}.",
+                delete_response.err
+            ))),
+        }
+    }
+
+    pub async fn get_block(
+        &mut self,
+        block_id: &[u8],
+    ) -> Result<Option<StorageBlock>, LandslideError> {
+        let key = Self::prefix(BLOCK_STATE_PREFIX, block_id);
+        let maybe_sb_bytes = self.get(key).await?;
+
+        Ok(match maybe_sb_bytes {
+            Some(sb_bytes) => serde_json::from_slice(&sb_bytes)?,
+            None => None,
+        })
     }
 
     pub async fn put_block(&mut self, sb: StorageBlock) -> Result<(), LandslideError> {
         let value = serde_json::to_vec(&sb)?;
         let key = Self::prefix(BLOCK_STATE_PREFIX, sb.block.id()?.as_ref());
-        let put_response = self.db.put(PutRequest { key, value }).await?.into_inner();
-        if put_response.err != 0 {
-            return Err(LandslideError::Generic(format!(
-                "DatabaseClient::put returned with error: {}",
-                put_response.err
-            )));
-        }
-        Ok(())
+
+        self.put(key, value).await
     }
 
     pub async fn delete_block(&mut self, block_id: &Id) -> Result<(), LandslideError> {
         let key = Self::prefix(BLOCK_STATE_PREFIX, block_id.as_ref());
-        let delete_response = self.db.delete(DeleteRequest { key }).await?.into_inner();
-        if delete_response.err != 0 {
-            return Err(LandslideError::Generic(format!(
-                "DatabaseClient::delete returned with error: {}",
-                delete_response.err
-            )));
-        }
-        Ok(())
+        self.delete(key).await
     }
 
-    pub async fn get_last_accepted_block_id(&mut self) -> Result<Id, LandslideError> {
-        let get_response = self
-            .db
-            .get(GetRequest {
-                key: self.last_accepted_block_id_key.clone(),
-            })
-            .await?
-            .into_inner();
-        if get_response.err != 0 {
-            return Err(LandslideError::Generic(format!(
-                "DatabaseClient::get returned with error: {}",
-                get_response.err
-            )));
-        }
+    pub async fn get_last_accepted_block_id(&mut self) -> Result<Option<Id>, LandslideError> {
+        let maybe_block_id_bytes = self.get(self.last_accepted_block_id_key.clone()).await?;
 
-        Ok(Id::new(get_response.value.as_ref())?)
+        Ok(match maybe_block_id_bytes {
+            Some(block_id_bytes) => Some(Id::new(block_id_bytes.as_ref())?),
+            None => None,
+        })
     }
 
     pub async fn set_last_accepted_block_id(&mut self, id: &Id) -> Result<(), LandslideError> {
-        let put_response = self
-            .db
-            .put(PutRequest {
-                key: self.last_accepted_block_id_key.clone(),
-                value: Vec::from(id.as_ref()),
-            })
-            .await?
-            .into_inner();
-        if put_response.err != 0 {
-            return Err(LandslideError::Generic(format!(
-                "DatabaseClient::put returned with error: {}",
-                put_response.err
-            )));
-        }
-        Ok(())
+        self.put(
+            self.last_accepted_block_id_key.clone(),
+            Vec::from(id.as_ref()),
+        )
+        .await
     }
 
     pub async fn is_state_initialized(&mut self) -> Result<bool, LandslideError> {
-        let get_response = self
-            .db
-            .get(GetRequest {
-                key: self.state_initialized_key.clone(),
-            })
-            .await?
-            .into_inner();
-        if get_response.err != 0 {
-            return Err(LandslideError::Generic(format!(
-                "DatabaseClient::get returned with error: {}",
-                get_response.err
-            )));
-        }
-        if !get_response.value.is_empty() {
-            return Ok(true);
-        }
-        Ok(false)
+        let maybe_state_initialized_bytes = self.get(self.state_initialized_key.clone()).await?;
+
+        Ok(match maybe_state_initialized_bytes {
+            Some(state_initialized_bytes) => !state_initialized_bytes.is_empty(),
+            None => false,
+        })
     }
 
     pub async fn set_state_initialized(&mut self) -> Result<(), LandslideError> {
-        let put_response = self
-            .db
-            .put(PutRequest {
-                key: self.state_initialized_key.clone(),
-                value: Vec::from(STATE_INITIALIZED_VALUE),
-            })
-            .await?
-            .into_inner();
-        if put_response.err != 0 {
-            return Err(LandslideError::Generic(format!(
-                "DatabaseClient::put returned with error: {}",
-                put_response.err
-            )));
-        }
-        Ok(())
+        self.put(
+            self.state_initialized_key.clone(),
+            Vec::from(STATE_INITIALIZED_VALUE),
+        )
+        .await
     }
 
     fn prefix(prefix: &[u8], data: &[u8]) -> Vec<u8> {

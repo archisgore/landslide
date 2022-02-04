@@ -187,7 +187,8 @@ impl TimestampVm {
             .ok_or(LandslideError::StateNotInitialized)?;
 
         let bid = block.id()?;
-        let parent_sb = state.get_block(block.parent_id.as_ref()).await?;
+        let parent_sb = state.get_block(block.parent_id.as_ref()).await?.ok_or(
+            LandslideError::Generic(format!("TimestampVm::verify_block - Parent Block ID {} was not found in the database for Block being verified with Id {}", block.parent_id, bid)))?;
 
         // Ensure [b]'s height comes right after its parent's height
         if parent_sb.block.height + 1 != block.height {
@@ -408,14 +409,16 @@ impl Vm for TimestampVm {
         let labid = log_and_escalate!(state
             .get_last_accepted_block_id()
             .await
-            .map_err(into_status));
+            .map_err(into_status))
+            .ok_or(Status::unknown("TimestampVm::initialize - unable to get last accepted block id from the database. This is unusual since the init_genesis() call made within this function a bit earlier, should have initialized the genesis block at least.".to_string()))?;
 
         log::info!(
             "TimestampVm::Initialize obtained last accepted block id: {}",
             labid
         );
 
-        let sb = log_and_escalate!(state.get_block(labid.as_ref()).await.map_err(into_status));
+        let sb = log_and_escalate!(state.get_block(labid.as_ref()).await.map_err(into_status))
+        .ok_or(Status::unknown(format!("The storage block with Id {} was not found in the database, which is unusual considering this id was obtained from the database as the last accepted block's id.", labid)))?;
 
         let u32status = sb.status as u32;
 
