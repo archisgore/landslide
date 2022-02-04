@@ -85,7 +85,7 @@ impl State {
     }
 
     pub async fn delete_block(&mut self, block_id: &Id) -> Result<(), LandslideError> {
-        let key = Self::prefix(BLOCK_STATE_PREFIX, &block_id.as_ref());
+        let key = Self::prefix(BLOCK_STATE_PREFIX, block_id.as_ref());
         let delete_response = self.db.delete(DeleteRequest { key }).await?.into_inner();
         if delete_response.err != 0 {
             return Err(LandslideError::Generic(format!(
@@ -146,7 +146,7 @@ impl State {
                 get_response.err
             )));
         }
-        if get_response.value.len() > 0 {
+        if !get_response.value.is_empty() {
             return Ok(true);
         }
         Ok(false)
@@ -277,16 +277,10 @@ impl Status {
     }
 
     pub fn decided(&self) -> bool {
-        match self {
-            Self::Rejected | Self::Accepted => true,
-            _ => false,
-        }
+        matches!(self, Self::Rejected | Self::Accepted)
     }
 
     pub fn valid(&self) -> bool {
-        match self {
-            Self::Unknown => false,
-            _ => true,
-        }
+        !matches!(self, Self::Unknown)
     }
 }

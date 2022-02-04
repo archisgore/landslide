@@ -47,10 +47,7 @@ impl Id {
 
         // b = [0, 0, 0, 0, 0, 0, 0, bitIndex]
 
-        match b {
-            0 => false,
-            _ => true,
-        }
+        !matches!(b, 0)
     }
 }
 

@@ -27,28 +27,18 @@ use tokio::sync::RwLock;
 use tonic::transport::Channel;
 
 use super::proto::appsender::app_sender_client::*;
-use super::proto::appsender::*;
 
 use super::proto::rpcdb::database_client::*;
-use super::proto::rpcdb::*;
 
 use super::proto::messenger::messenger_client::*;
-use super::proto::messenger::*;
 
 use super::proto::gsubnetlookup::subnet_lookup_client::*;
-use super::proto::gsubnetlookup::*;
 
 use super::proto::gsharedmemory::shared_memory_client::*;
-use super::proto::gsharedmemory::*;
 
 use super::proto::gkeystore::keystore_client::*;
-use super::proto::gkeystore::*;
-
-use super::proto::ghttp::http_client::*;
-use super::proto::ghttp::*;
 
 use super::proto::galiasreader::alias_reader_client::*;
-use super::proto::galiasreader::*;
 
 const LOG_PREFIX: &str = "TimestampVm:: ";
 
@@ -58,7 +48,7 @@ const LOG_PREFIX: &str = "TimestampVm:: ";
 pub enum Lock {
     Write,
     Read,
-    NoLock,
+    None,
 }
 
 // TimestampVM cannot mutably reference self on all its trait methods.
@@ -197,7 +187,7 @@ impl TimestampVm {
             .ok_or(LandslideError::StateNotInitialized)?;
 
         let bid = block.id()?;
-        let parent_sb = state.get_block(&block.parent_id.as_ref()).await?;
+        let parent_sb = state.get_block(block.parent_id.as_ref()).await?;
 
         // Ensure [b]'s height comes right after its parent's height
         if parent_sb.block.height + 1 != block.height {
@@ -313,8 +303,8 @@ impl Vm for TimestampVm {
 
         let mut versioned_db_clients: BTreeMap<Version, DatabaseClient<Channel>> = BTreeMap::new();
         for db_server in ir.db_servers.iter() {
-            let ver_without_v = db_server.version.trim_start_matches("v");
-            let version = log_and_escalate!(Version::parse(&ver_without_v).map_err(into_status));
+            let ver_without_v = db_server.version.trim_start_matches('v');
+            let version = log_and_escalate!(Version::parse(ver_without_v).map_err(into_status));
             let conn = log_and_escalate!(writable_interior
                 .jsonrpc_broker
                 .dial_to_host_service(db_server.db_server)
@@ -392,7 +382,7 @@ impl Vm for TimestampVm {
         log::info!("{}Initialize - initialized app sender client", LOG_PREFIX);
 
         if let Some(versioned_db_clients) = writable_interior.versioned_db_clients.as_ref() {
-            if versioned_db_clients.len() <= 0 {
+            if versioned_db_clients.is_empty() {
                 return Err(Status::unknown("zero versioned_db_clients were found. Unable to proceed without a versioned database."));
             }
             if let Some(db_client) = versioned_db_clients.values().rev().next() {
@@ -425,7 +415,7 @@ impl Vm for TimestampVm {
             labid
         );
 
-        let sb = log_and_escalate!(state.get_block(&labid.as_ref()).await.map_err(into_status));
+        let sb = log_and_escalate!(state.get_block(labid.as_ref()).await.map_err(into_status));
 
         let u32status = sb.status as u32;
 
@@ -483,7 +473,7 @@ impl Vm for TimestampVm {
         );
         let vm_static_api_service = Handler {
             prefix: "".to_string(),
-            lock_options: Lock::NoLock as u32,
+            lock_options: Lock::None as u32,
             server: server_id,
         };
         log::debug!(
@@ -527,7 +517,7 @@ impl Vm for TimestampVm {
         );
         let vm_static_api_service = Handler {
             prefix: "".to_string(),
-            lock_options: Lock::NoLock as u32,
+            lock_options: Lock::None as u32,
             server: server_id,
         };
         log::debug!("{}, ({},{}) - Created a new JSON-RPC 2.0 server for static handlers with server_id: {}", function!(), file!(), line!(), server_id);
