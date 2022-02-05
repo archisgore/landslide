@@ -47,7 +47,7 @@ pub mod rpcdb {
 use num_derive::FromPrimitive;
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/message.go#L13
-#[derive(Debug, FromPrimitive, Copy)]
+#[derive(Debug, FromPrimitive, Clone, Copy)]
 enum Message {
     PendingTransactions = 0,
 }
@@ -55,7 +55,7 @@ enum Message {
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
 // To get a u32 representation of this, just pick any one variant 'as u32'. For example:
 //     lock: Lock::WriteLock as u32
-#[derive(Debug, FromPrimitive, Copy)]
+#[derive(Debug, FromPrimitive, Clone, Copy)]
 pub enum Lock {
     WriteLock = 0,
     ReadLock,
@@ -63,7 +63,7 @@ pub enum Lock {
 }
 
 // https://github.com/ava-labs/avalanchego/blob/master/database/rpcdb/errors.go
-#[derive(Debug, FromPrimitive, Copy)]
+#[derive(Debug, FromPrimitive, Clone, Copy)]
 pub enum DatabaseError {
     None = 0,
     Closed = 1,

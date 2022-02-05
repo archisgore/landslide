@@ -1,4 +1,5 @@
 use super::error::LandslideError;
+use anyhow::anyhow;
 use hex::ToHex;
 use hmac_sha256::Hash;
 use serde::{Deserialize, Serialize};
@@ -32,7 +33,7 @@ impl Id {
 
     // Generate an Id for an arbitrary set of bytes.
     pub fn generate(bytes: &[u8]) -> Result<Id, LandslideError> {
-        Ok(Id::from_bytes(Hash::hash(bytes))?)
+        Id::from_bytes(Hash::hash(bytes))
     }
 
     // Bit returns the bit value at the ith index of the byte array. Returns 0 or 1
@@ -67,9 +68,10 @@ impl FromStr for Id {
         let newid: [u8; BYTE_LENGTH] = match bytes.try_into() {
             Ok(n) => n,
             Err(err) => {
-                return Err(LandslideError::Generic(format!(
+                return Err(LandslideError::Other(anyhow!(
                     "Error when deserializing ID from string {}. Error: {:?}",
-                    s, err
+                    s,
+                    err
                 )))
             }
         };

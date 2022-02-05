@@ -28,7 +28,7 @@ log4rs = { version = "1.0" }
 tempfile = "3.3"
 async-stream = "0.3"
 backtrace = "0.3"
-time = "0.3.7"
+time = { version = "0.3.7", features = ["formatting", "parsing"]}
 tower = "0.4.11"
 hyper = "0.14.16"
 http = "0.2.6"
@@ -41,7 +41,10 @@ byteorder = "1.4.3"
 num = "0.4"
 num-derive = "0.3"
 num-traits = "0.2"
-grr-plugin = "0.1.4"
+thiserror = "1.0"
+anyhow = "1.0"
+lazy_static = "1.4.0"
+grr-plugin = "0.1.7"
 
 [build-dependencies]
 tonic-build = "0.6"

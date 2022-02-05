@@ -8,6 +8,7 @@ pub mod proto;
 // timestamp VM
 mod timestampvm;
 
+use anyhow::{Context, Result};
 use grr_plugin::{HandshakeConfig, Server};
 use proto::vm_proto::vm_server::VmServer;
 use std::env;
@@ -28,24 +29,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     init_logger();
 
     log::info!("creating grr-plugin (go-plugin) Server...");
-    let mut plugin = log_and_escalate!(Server::new(
+    let mut plugin = Server::new(
         AVALANCHE_VM_PROTOCOL_VERSION,
         HandshakeConfig {
             magic_cookie_key: MAGIC_COOKIE_KEY.to_string(),
             magic_cookie_value: MAGIC_COOKIE_VALUE.to_string(),
         },
-    ));
+    ).with_context(|| format!("Error creating the plugin server with Avalanche protocol version {} and Handshake configuration with magic_cookie_key: {} and magic_cookie_value: {}", AVALANCHE_VM_PROTOCOL_VERSION, MAGIC_COOKIE_KEY, MAGIC_COOKIE_VALUE))?;
 
     // extract the JSON-RPC Broker
     let jsonrpc_broker = plugin.jsonrpc_broker().await?;
 
-    let tsvm = log_and_escalate!(TimestampVm::new(jsonrpc_broker));
+    let tsvm = TimestampVm::new(jsonrpc_broker).context("Unable to create TimestampVm")?;
 
     log::info!("Initialized the timestampvm logger");
     let vm = VmServer::new(tsvm);
     log::info!("TimestampVm Service Created");
 
-    log_and_escalate!(plugin.serve(vm).await);
+    plugin
+        .serve(vm)
+        .await
+        .context("Error serving the plugin vm using the grr-plugin scaffolding server")?;
 
     Ok(())
 }
