@@ -14,7 +14,9 @@ use grr_plugin::{HandshakeConfig, Server};
 use proto::vm_proto::vm_server::VmServer;
 use std::env;
 use std::error::Error;
+use std::sync::Arc;
 use timestampvm::TimestampVm;
+use tokio::sync::Mutex;
 
 const LANDSLIDE_LOG_CONFIG_FILE: &str = "LANDSLIDE_LOG_CONFIG_FILE";
 
@@ -39,9 +41,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     ).with_context(|| format!("Error creating the plugin server with Avalanche protocol version {} and Handshake configuration with magic_cookie_key: {} and magic_cookie_value: {}", AVALANCHE_VM_PROTOCOL_VERSION, MAGIC_COOKIE_KEY, MAGIC_COOKIE_VALUE))?;
 
     // extract the JSON-RPC Broker
-    let jsonrpc_broker = plugin.jsonrpc_broker().await?;
+    let grpc_broker = Arc::new(Mutex::new(plugin.grpc_broker().await?));
 
-    let tsvm = TimestampVm::new(jsonrpc_broker).context("Unable to create TimestampVm")?;
+    let tsvm = TimestampVm::new(grpc_broker).context("Unable to create TimestampVm")?;
 
     log::info!("Initialized the timestampvm logger");
     let vm = VmServer::new(tsvm);

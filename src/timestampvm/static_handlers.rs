@@ -4,8 +4,6 @@ use jsonrpc_core::{Error as JsonRpcError, IoHandler, Result};
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 
-const LOG_PREFIX: &str = "TimestampVM::StaticHandlers: ";
-
 pub fn new() -> IoHandler {
     let mut io = IoHandler::new();
     let static_handlers = StaticHandlersImpl;
@@ -45,22 +43,22 @@ pub trait StaticHandlers {
     #[rpc(name = "")]
     fn catch_all(&self) -> Result<u64>;
 
-    #[rpc(name = "Encode")]
+    #[rpc(name = "encode")]
     fn encode(&self, args: EncodeArgs) -> Result<EncodeReply>;
 
-    #[rpc(name = "Decode")]
+    #[rpc(name = "decode")]
     fn decode(&self, args: DecodeArgs) -> Result<DecodeReply>;
 }
 
 pub struct StaticHandlersImpl;
 impl StaticHandlers for StaticHandlersImpl {
     fn catch_all(&self) -> Result<u64> {
-        log::info!("{} Catch all", LOG_PREFIX);
-        Ok(23)
+        log::info!("Catch all");
+        Ok(21)
     }
 
     fn encode(&self, args: EncodeArgs) -> Result<EncodeReply> {
-        log::info!("{} Encode called", LOG_PREFIX);
+        log::info!("Encode called");
         if args.data.is_empty() {
             return Err(JsonRpcError::invalid_params("data length was zero"));
         }
@@ -94,7 +92,7 @@ impl StaticHandlers for StaticHandlersImpl {
     }
 
     fn decode(&self, args: DecodeArgs) -> Result<DecodeReply> {
-        log::info!("{} Decode called", LOG_PREFIX);
+        log::info!("Decode called");
         let bytes = String::from_utf8(args.encoding.decode(args.bytes, Checksum::Yes).map_err(
             |e| {
                 log::error!("Error decoding data: {}", e);

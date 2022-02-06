@@ -44,7 +44,13 @@ pub mod rpcdb {
     tonic::include_proto!("rpcdbproto");
 }
 
+use ghttp::http_server::HttpServer;
+use ghttp::{HttpRequest, HttpResponse};
+use grr_plugin::GRpcBroker;
 use num_derive::FromPrimitive;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tonic::{Request, Response, Status};
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/message.go#L13
 #[derive(Debug, FromPrimitive, Clone, Copy)]
@@ -68,4 +74,36 @@ pub enum DatabaseError {
     None = 0,
     Closed = 1,
     NotFound = 2,
+}
+
+pub struct GHttpServer {
+    grpc_broker: Arc<Mutex<GRpcBroker>>,
+}
+
+impl GHttpServer {
+    pub fn new_server(grpc_broker: Arc<Mutex<GRpcBroker>>) -> HttpServer<GHttpServer> {
+        HttpServer::new(GHttpServer { grpc_broker })
+    }
+}
+
+#[tonic::async_trait]
+impl ghttp::http_server::Http for GHttpServer {
+    async fn handle(&self, req: Request<HttpRequest>) -> Result<Response<HttpResponse>, Status> {
+        let http_req = req.into_inner();
+        let read_conn_id = http_req
+            .request
+            .ok_or_else(|| Status::unknown("request was expected to be non-empty"))?
+            .body;
+        let write_conn_id = http_req
+            .response_writer
+            .ok_or_else(|| Status::unknown("response_writer was expected to be non-empty"))?
+            .id;
+
+        log::info!(
+            "read_conn_id: {} write_conn_id: {}",
+            read_conn_id,
+            write_conn_id
+        );
+        Err(Status::unknown(""))
+    }
 }

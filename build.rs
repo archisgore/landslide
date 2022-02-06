@@ -4,21 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .build_client(false)
         .format(true)
-        .compile(
-            &[
-                "proto/vm.proto",
-                "proto/metrics.proto",
-                "proto/appsender.proto",
-                "proto/galiasreader.proto",
-                "proto/ghttp.proto",
-                "proto/gkeystore.proto",
-                "proto/gsharedmemory.proto",
-                "proto/gsubnetlookup.proto",
-                "proto/messenger.proto",
-                "proto/rpcdb.proto",
-            ],
-            &["proto"],
-        )?;
+        .compile(&["proto/vm.proto", "proto/ghttp.proto"], &["proto"])?;
 
     // the clients we'll consume
     tonic_build::configure()
@@ -28,7 +14,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 "proto/appsender.proto",
                 "proto/galiasreader.proto",
-                "proto/ghttp.proto",
                 "proto/gkeystore.proto",
                 "proto/gsharedmemory.proto",
                 "proto/gsubnetlookup.proto",

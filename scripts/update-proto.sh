@@ -83,7 +83,6 @@ function messengerproto() {
     wget ${remote_path}${proto_filename} -O ${local_path}${proto_filename} 
 }
 
-
 vmproto
 prometheusproto
 gkeystoreproto

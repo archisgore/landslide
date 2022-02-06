@@ -6,23 +6,36 @@ mod static_handlers;
 use crate::error::LandslideError;
 
 use super::context::Context;
+use super::proto;
 use super::proto::vm_proto::*;
-use std::collections::BTreeMap;
-use tonic::{Request, Response};
-
 use semver::Version;
 use state::{Block, State, Status as BlockStatus, StorageBlock, BLOCK_DATA_LEN};
+use std::collections::BTreeMap;
+use tonic::{Request, Response};
 
 use super::error::into_status;
 use crate::id::{Id, ZERO_ID};
 use crate::proto::vm_proto::vm_server::Vm;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
-use grr_plugin::JsonRpcBroker;
+use grr_plugin::GRpcBroker;
+use grr_plugin::ServiceId;
 use grr_plugin::Status;
+use hyper::{
+    service::{make_service_fn as make_hyper_service_fn, service_fn as hyper_service_fn},
+    Body, Request as HyperRequest, Response as HyperResponse, Server,
+};
 use std::collections::HashMap;
+use std::error::Error as StdError;
+use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
+use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tonic::transport::Channel;
+use tonic::body::BoxBody;
+use tonic::transport::NamedService;
+use tonic::transport::{Channel, Endpoint, Uri};
+use tonic::Streaming;
+use tower::service_fn as tower_service_fn;
+use tower::Service;
 
 use super::proto::appsender::app_sender_client::*;
 
@@ -38,7 +51,7 @@ use super::proto::gkeystore::keystore_client::*;
 
 use super::proto::galiasreader::alias_reader_client::*;
 
-const LOG_PREFIX: &str = "TimestampVm:: ";
+const GRPC_LOCK_ERROR_MESSAGE: &str = "Failed to lock the GRPC Broker";
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
 // To get a u32 representation of this, just pick any one variant 'as u32'. For example:
@@ -55,7 +68,7 @@ pub enum Lock {
 struct TimestampVmInterior {
     ctx: Option<Context>,
     version: Version,
-    jsonrpc_broker: JsonRpcBroker,
+    grpc_broker: Arc<Mutex<GRpcBroker>>,
 
     // These get initialized during the Initialize RPC call.
     state: Option<State>,
@@ -72,42 +85,19 @@ struct TimestampVmInterior {
     preferred_block_id: Option<Id>,
 }
 
-pub struct TimestampVm {
-    interior: RwLock<TimestampVmInterior>,
-}
-
-impl TimestampVm {
-    pub fn new(jsonrpc_broker: JsonRpcBroker) -> Result<TimestampVm, LandslideError> {
-        Ok(TimestampVm {
-            interior: RwLock::new(TimestampVmInterior {
-                ctx: None,
-                version: Version::new(1, 2, 1),
-                jsonrpc_broker,
-
-                state: None,
-                versioned_db_clients: None,
-                engine_client: None,
-                keystore_client: None,
-                shared_memory_client: None,
-                bc_lookup_client: None,
-                sn_lookup_client: None,
-                appsender_client: None,
-
-                verified_blocks: HashMap::new(),
-                preferred_block_id: None,
-            }),
-        })
+impl TimestampVmInterior {
+    async fn mut_state_status(&mut self) -> Result<&mut State, Status> {
+        self.mut_state().await.map_err(into_status)
     }
 
-    async fn accept_block(
-        writable_interior: &mut TimestampVmInterior,
-        mut sb: StorageBlock,
-    ) -> Result<(), LandslideError> {
-        let state = writable_interior
-            .state
+    async fn mut_state(&mut self) -> Result<&mut State, LandslideError> {
+        self.state
             .as_mut()
             .ok_or(LandslideError::StateNotInitialized)
-            .map_err(into_status)?;
+    }
+
+    async fn accept_block(&mut self, mut sb: StorageBlock) -> Result<(), LandslideError> {
+        let state = self.mut_state().await?;
 
         sb.status = BlockStatus::Accepted;
         let bid = sb.block.id()?;
@@ -119,7 +109,7 @@ impl TimestampVm {
         state.set_last_accepted_block_id(&bid).await?;
         log::info!("Setting last accepted block id in database to: {}", bid);
 
-        writable_interior.verified_blocks.remove(&bid);
+        self.verified_blocks.remove(&bid);
         log::info!(
             "Removing from verified blocks, since it is now accepted, the block id: {}",
             bid
@@ -128,17 +118,10 @@ impl TimestampVm {
         Ok(())
     }
 
-    async fn init_genesis(
-        writable_interior: &mut TimestampVmInterior,
-        genesis_bytes: &[u8],
-    ) -> Result<(), LandslideError> {
+    async fn init_genesis(&mut self, genesis_bytes: &[u8]) -> Result<(), LandslideError> {
         log::trace!("initialize called");
 
-        let state = writable_interior
-            .state
-            .as_mut()
-            .ok_or(LandslideError::StateNotInitialized)
-            .map_err(into_status)?;
+        let state = self.mut_state().await?;
 
         if state.is_state_initialized().await? {
             // State is already initialized - no need to init genesis block
@@ -183,37 +166,107 @@ impl TimestampVm {
             "Genesis storage block with Id {} put in database successfully.",
             genesis_block_id
         );
-        Self::accept_block(writable_interior, genesis_storage_block).await?;
+        self.accept_block(genesis_storage_block).await?;
         log::info!(
             "Genesis storage block with Id {} was accepted by this node.",
             genesis_block_id
         );
 
         // reacquire state since we need to release writable_interior to pass into accept_block
-        let state = writable_interior
-            .state
-            .as_mut()
-            .ok_or(LandslideError::StateNotInitialized)
-            .map_err(into_status)?;
+        let state = self.mut_state_status().await?;
         state.set_state_initialized().await?;
         log::info!("State set to initialized, so it won't hapen again.");
 
         Ok(())
     }
 
-    async fn set_preference(writable_interior: &mut TimestampVmInterior, preferred_block_id: Id) {
-        writable_interior.preferred_block_id = Some(preferred_block_id)
+    async fn set_preference(&mut self, preferred_block_id: Id) {
+        self.preferred_block_id = Some(preferred_block_id)
+    }
+
+    async fn open_connection(
+        &mut self,
+        service_id: ServiceId,
+        target: &str,
+    ) -> Result<Channel, Status> {
+        Ok(self
+            .grpc_broker
+            .lock()
+            .await
+            .dial_to_host_service(service_id)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to dial a connection to the {} server {}",
+                    target, service_id,
+                )
+            })
+            .map_err(|e| e.into())
+            .map_err(into_status)?)
+    }
+
+    pub async fn new_grpc_server<S>(&mut self, server: S) -> Result<ServiceId, Status>
+    where
+        S: Service<HyperRequest<Body>, Response = HyperResponse<BoxBody>>
+            + NamedService
+            + Clone
+            + Send
+            + 'static,
+        <S as Service<HyperRequest<Body>>>::Future: Send + 'static,
+        <S as Service<HyperRequest<Body>>>::Error: Into<Box<dyn StdError + Send + Sync>> + Send,
+    {
+        self.grpc_broker
+            .lock()
+            .await
+            .new_grpc_server(server)
+            .await
+            .context("Unable to create a new GHttp Server server for handlers")
+            .map_err(|e| e.into())
+            .map_err(into_status)
+    }
+
+    async fn version(&self) -> Result<Response<VersionResponse>, Status> {
+        let version = self.version.to_string();
+        log::info!("responding with version {}", version);
+        Ok(Response::new(VersionResponse {
+            version: self.version.to_string(),
+        }))
+    }
+}
+
+pub struct TimestampVm {
+    interior: RwLock<TimestampVmInterior>,
+}
+
+impl TimestampVm {
+    pub fn new(grpc_broker: Arc<Mutex<GRpcBroker>>) -> Result<TimestampVm, LandslideError> {
+        Ok(TimestampVm {
+            interior: RwLock::new(TimestampVmInterior {
+                ctx: None,
+                version: Version::new(1, 2, 1),
+                grpc_broker,
+
+                state: None,
+                versioned_db_clients: None,
+                engine_client: None,
+                keystore_client: None,
+                shared_memory_client: None,
+                bc_lookup_client: None,
+                sn_lookup_client: None,
+                appsender_client: None,
+
+                verified_blocks: HashMap::new(),
+                preferred_block_id: None,
+            }),
+        })
     }
 
     // Verify returns nil iff this block is valid.
     // To be valid, it must be that:
     // b.parent.Timestamp < b.Timestamp <= [local time] + 1 hour
     async fn verify_block(&mut self, block: Block) -> Result<(), LandslideError> {
-        let mut writable_interor = self.interior.write().await;
-        let state = writable_interor
-            .state
-            .as_mut()
-            .ok_or(LandslideError::StateNotInitialized)?;
+        let mut writable_interior = self.interior.write().await;
+        let state = writable_interior.mut_state().await?;
 
         let bid = block.id()?;
         let parent_sb = state.get_block(block.parent_id.as_ref()).await?.ok_or_else(||
@@ -251,7 +304,7 @@ impl TimestampVm {
         }
 
         // Put that block to verified blocks in memory
-        writable_interor.verified_blocks.insert(bid, block);
+        writable_interior.verified_blocks.insert(bid, block);
 
         Ok(())
     }
@@ -260,10 +313,7 @@ impl TimestampVm {
     // Recall that b.vm.DB.Commit() must be called to persist to the DB
     async fn reject_block(&self, block: Block) -> Result<(), LandslideError> {
         let mut writable_interor = self.interior.write().await;
-        let state = writable_interor
-            .state
-            .as_mut()
-            .ok_or(LandslideError::StateNotInitialized)?;
+        let state = writable_interor.mut_state().await?;
 
         let sb = StorageBlock {
             block,
@@ -277,17 +327,6 @@ impl TimestampVm {
 
         Ok(())
     }
-
-    async fn version_on_readable_interior(
-        readable_interior: &TimestampVmInterior,
-        _request: Request<()>,
-    ) -> Result<Response<VersionResponse>, Status> {
-        let version = readable_interior.version.to_string();
-        log::info!("responding with version {}", version);
-        Ok(Response::new(VersionResponse {
-            version: readable_interior.version.to_string(),
-        }))
-    }
 }
 
 #[tonic::async_trait]
@@ -296,25 +335,21 @@ impl Vm for TimestampVm {
         &self,
         request: Request<InitializeRequest>,
     ) -> Result<Response<InitializeResponse>, Status> {
-        log::info!("{}Initialize called", LOG_PREFIX);
+        log::trace!("called");
         let mut writable_interior = self.interior.write().await;
 
-        log::info!("{}Initialize Calling Version...", LOG_PREFIX);
+        log::trace!("Initialize Calling Version...");
 
         let version =
-            Self::version_on_readable_interior(&writable_interior, Request::new(())).await
+            writable_interior.version().await
             .context("Failed calling version on the mutable interior (but passed immutably) of the TimestampVm")
             .map_err(|e| e.into())
             .map_err(into_status)?;
 
-        log::info!(
-            "{}Initialize obtained VM version: {:?}",
-            LOG_PREFIX,
-            version
-        );
+        log::trace!("Initialize obtained VM version: {:?}", version);
 
         let ir = request.into_inner();
-        log::trace!("{}, Full Request: {:?}", LOG_PREFIX, ir,);
+        log::trace!("Full Request: {:?}", ir,);
 
         writable_interior.ctx = Some(Context {
             network_id: ir.network_id,
@@ -325,7 +360,7 @@ impl Vm for TimestampVm {
             x_chain_id: ir.x_chain_id,
             avax_asset_id: ir.avax_asset_id,
         });
-        log::info!("{}Initialize - setup context from genesis data", LOG_PREFIX);
+        log::trace!("setup context from genesis data");
 
         let mut versioned_db_clients: BTreeMap<Version, DatabaseClient<Channel>> = BTreeMap::new();
         for db_server in ir.db_servers.iter() {
@@ -336,130 +371,54 @@ impl Vm for TimestampVm {
                 .map_err(into_status)?;
 
             let conn = writable_interior
-                .jsonrpc_broker
-                .dial_to_host_service(db_server.db_server)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to dial a connection to the VersionedDatabase server {}",
-                        db_server.db_server
-                    )
-                })
-                .map_err(|e| e.into())
-                .map_err(into_status)?;
+                .open_connection(db_server.db_server, "VersionedDatabase")
+                .await?;
 
             let db_client = DatabaseClient::new(conn);
             versioned_db_clients.insert(version, db_client);
             log::info!(
-                "{}Initialize - initialized versioned db client for server: {:?}",
-                LOG_PREFIX,
+                "initialized versioned db client for server: {:?}",
                 db_server
             );
         }
         writable_interior.versioned_db_clients = Some(versioned_db_clients);
-        log::info!(
-            "{}Initialize - initialized all versioned db clients",
-            LOG_PREFIX
-        );
+        log::trace!("initialized all versioned db clients",);
 
         let conn = writable_interior
-            .jsonrpc_broker
-            .dial_to_host_service(ir.engine_server)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to dial a connection to the engine_server {}",
-                    ir.engine_server
-                )
-            })
-            .map_err(|e| e.into())
-            .map_err(into_status)?;
+            .open_connection(ir.engine_server, "engine_server")
+            .await?;
         writable_interior.engine_client = Some(MessengerClient::new(conn));
-        log::info!(
-            "{}Initialize - initialized messenger (engine server) client",
-            LOG_PREFIX
-        );
+        log::trace!("initialized messenger (engine server) client",);
 
         let conn = writable_interior
-            .jsonrpc_broker
-            .dial_to_host_service(ir.keystore_server)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to dial a connection to the keystore_server {}",
-                    ir.keystore_server
-                )
-            })
-            .map_err(|e| e.into())
-            .map_err(into_status)?;
+            .open_connection(ir.keystore_server, "keystore_server")
+            .await?;
         writable_interior.keystore_client = Some(KeystoreClient::new(conn));
-        log::info!("{}Initialize - initialized keystore client", LOG_PREFIX);
+        log::trace!("initialized keystore client");
 
         let conn = writable_interior
-            .jsonrpc_broker
-            .dial_to_host_service(ir.shared_memory_server)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to dial a connection to the shared_memory_server {}",
-                    ir.shared_memory_server
-                )
-            })
-            .map_err(|e| e.into())
-            .map_err(into_status)?;
+            .open_connection(ir.shared_memory_server, "shared_memory_server")
+            .await?;
         writable_interior.shared_memory_client = Some(SharedMemoryClient::new(conn));
-        log::info!(
-            "{}Initialize - initialized shared memory client",
-            LOG_PREFIX
-        );
+        log::trace!("initialized shared memory client",);
 
         let conn = writable_interior
-            .jsonrpc_broker
-            .dial_to_host_service(ir.bc_lookup_server)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to dial a connection to the bc_lookup_server {}",
-                    ir.bc_lookup_server
-                )
-            })
-            .map_err(|e| e.into())
-            .map_err(into_status)?;
+            .open_connection(ir.bc_lookup_server, "bc_lookup_server")
+            .await?;
         writable_interior.bc_lookup_client = Some(AliasReaderClient::new(conn));
-        log::info!("{}Initialize - initialized alias reader client", LOG_PREFIX);
+        log::trace!("initialized alias reader client");
 
         let conn = writable_interior
-            .jsonrpc_broker
-            .dial_to_host_service(ir.sn_lookup_server)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to dial a connection to the sn_lookup_server {}",
-                    ir.sn_lookup_server
-                )
-            })
-            .map_err(|e| e.into())
-            .map_err(into_status)?;
+            .open_connection(ir.sn_lookup_server, "sn_lookup_server")
+            .await?;
         writable_interior.sn_lookup_client = Some(SubnetLookupClient::new(conn));
-        log::info!(
-            "{}Initialize - initialized subnet lookup client",
-            LOG_PREFIX
-        );
+        log::trace!("initialized subnet lookup client",);
 
         let conn = writable_interior
-            .jsonrpc_broker
-            .dial_to_host_service(ir.app_sender_server)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to dial a connection to the app_sender_server {}",
-                    ir.app_sender_server
-                )
-            })
-            .map_err(|e| e.into())
-            .map_err(into_status)?;
+            .open_connection(ir.app_sender_server, "app_sender_server")
+            .await?;
         writable_interior.appsender_client = Some(AppSenderClient::new(conn));
-        log::info!("{}Initialize - initialized app sender client", LOG_PREFIX);
+        log::trace!("initialized app sender client");
 
         if let Some(versioned_db_clients) = writable_interior.versioned_db_clients.as_ref() {
             if versioned_db_clients.is_empty() {
@@ -475,19 +434,17 @@ impl Vm for TimestampVm {
             return Err(Status::unknown("versioned_db_clients was None, when it was just set in this same method a little bit before."));
         }
 
-        TimestampVm::init_genesis(&mut writable_interior, ir.genesis_bytes.as_ref())
+        writable_interior
+            .init_genesis(ir.genesis_bytes.as_ref())
             .await
             .context("Failed to initialize genesis block.")
             .map_err(|e| e.into())
             .map_err(into_status)?;
 
-        log::info!("TimestampVm::Initialize genesis initialized");
+        log::trace!("TimestampVm::Initialize genesis initialized");
 
-        let state = writable_interior
-            .state
-            .as_mut()
-            .ok_or(LandslideError::StateNotInitialized)
-            .map_err(into_status)?;
+        let state = writable_interior.mut_state_status().await?;
+
         let labid = state
             .get_last_accepted_block_id()
             .await
@@ -496,7 +453,7 @@ impl Vm for TimestampVm {
             .map_err(into_status)?
             .ok_or_else(||Status::unknown("TimestampVm::initialize - unable to find last accepted block id in the database. This is unusual since the init_genesis() call made within this function a bit earlier, should have initialized the genesis block at least.".to_string()))?;
 
-        log::info!(
+        log::trace!(
             "TimestampVm::Initialize obtained last accepted block id: {}",
             labid
         );
@@ -509,13 +466,13 @@ impl Vm for TimestampVm {
 
         let u32status = sb.status as u32;
 
-        log::info!(
+        log::trace!(
             "TimestampVm::Initialize obtained last accepted block with status: {:?}(u32 value: {})",
             sb.status,
             u32status
         );
 
-        Self::set_preference(&mut writable_interior, labid.clone()).await;
+        writable_interior.set_preference(labid.clone()).await;
 
         Ok(Response::new(InitializeResponse {
             last_accepted_id: Vec::from(labid.as_ref()),
@@ -528,17 +485,17 @@ impl Vm for TimestampVm {
     }
 
     async fn bootstrapping(&self, _request: Request<()>) -> Result<Response<()>, Status> {
-        log::info!("bootstrapping called");
+        log::trace!("bootstrapping called");
         Ok(Response::new(()))
     }
 
     async fn bootstrapped(&self, _request: Request<()>) -> Result<Response<()>, Status> {
-        log::info!("bootstrapped called");
+        log::trace!("bootstrapped called");
         Ok(Response::new(()))
     }
 
     async fn shutdown(&self, _request: Request<()>) -> Result<Response<()>, Status> {
-        log::info!("shutdown called");
+        log::trace!("shutdown called");
 
         Ok(Response::new(()))
     }
@@ -547,17 +504,12 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<CreateHandlersResponse>, Status> {
-        log::info!("create_handlers called");
+        log::trace!("create_handlers called");
         let mut writable_interor = self.interior.write().await;
 
-        log::debug!("Creating a new JSON-RPC 2.0 server for handlers...",);
-        let server_id = writable_interor
-            .jsonrpc_broker
-            .new_server(static_handlers::new())
-            .await
-            .context("Unable to create a new JSON-RPC 2.0 server for handlers")
-            .map_err(|e| e.into())
-            .map_err(into_status)?;
+        let ghttp_server = proto::GHttpServer::new_server(writable_interor.grpc_broker.clone());
+        log::debug!("Creating a new JSON-RPC 2.0 server for static handlers...",);
+        let server_id = writable_interor.new_grpc_server(ghttp_server).await?;
 
         let vm_static_api_service = Handler {
             prefix: "".to_string(),
@@ -580,17 +532,12 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<CreateStaticHandlersResponse>, Status> {
-        log::info!("create_static_handlers called");
+        log::trace!("create_static_handlers called");
         let mut writable_interor = self.interior.write().await;
 
+        let ghttp_server = proto::GHttpServer::new_server(writable_interor.grpc_broker.clone());
         log::debug!("Creating a new JSON-RPC 2.0 server for static handlers...",);
-        let server_id = writable_interor
-            .jsonrpc_broker
-            .new_server(static_handlers::new())
-            .await
-            .context("Unable to create a new JSON-RPC 2.0 server for handlers")
-            .map_err(|e| e.into())
-            .map_err(into_status)?;
+        let server_id = writable_interor.new_grpc_server(ghttp_server).await?;
 
         let vm_static_api_service = Handler {
             prefix: "".to_string(),
@@ -609,7 +556,7 @@ impl Vm for TimestampVm {
     }
 
     async fn connected(&self, _request: Request<ConnectedRequest>) -> Result<Response<()>, Status> {
-        log::info!("connected called");
+        log::trace!("connected called");
         Ok(Response::new(()))
     }
 
@@ -617,7 +564,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<DisconnectedRequest>,
     ) -> Result<Response<()>, Status> {
-        log::info!("disconnected called");
+        log::trace!("disconnected called");
         Ok(Response::new(()))
     }
 
@@ -625,7 +572,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<BuildBlockResponse>, Status> {
-        log::info!("build_block called");
+        log::trace!("build_block called");
         todo!()
     }
 
@@ -633,7 +580,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<ParseBlockRequest>,
     ) -> Result<Response<ParseBlockResponse>, Status> {
-        log::info!("parse_block called");
+        log::trace!("parse_block called");
         todo!()
     }
 
@@ -641,7 +588,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<GetBlockRequest>,
     ) -> Result<Response<GetBlockResponse>, Status> {
-        log::info!("get_block called");
+        log::trace!("get_block called");
         todo!()
     }
 
@@ -649,26 +596,26 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<SetPreferenceRequest>,
     ) -> Result<Response<()>, Status> {
-        log::info!("set_preference called");
+        log::trace!("set_preference called");
         Ok(Response::new(()))
     }
 
     async fn health(&self, _request: Request<()>) -> Result<Response<HealthResponse>, Status> {
-        log::info!("health called");
-        log::info!("TimestampVM: Health endpoint pinged; reporting healthy...");
+        log::trace!("health called");
+        log::debug!("TimestampVM: Health endpoint pinged; reporting healthy...");
         Ok(Response::new(HealthResponse {
             details: "All is well.".to_string(),
         }))
     }
 
     async fn version(&self, request: Request<()>) -> Result<Response<VersionResponse>, Status> {
-        log::info!("version called");
+        log::trace!("version called");
         let readable_interior = self.interior.read().await;
-        Self::version_on_readable_interior(&readable_interior, request).await
+        readable_interior.version().await
     }
 
     async fn app_request(&self, _request: Request<AppRequestMsg>) -> Result<Response<()>, Status> {
-        log::info!("app_request called");
+        log::trace!("app_request called");
         Ok(Response::new(()))
     }
 
@@ -676,7 +623,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<AppRequestFailedMsg>,
     ) -> Result<Response<()>, Status> {
-        log::info!("app_request_failed called");
+        log::trace!("app_request_failed called");
         Ok(Response::new(()))
     }
 
@@ -684,17 +631,17 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<AppResponseMsg>,
     ) -> Result<Response<()>, Status> {
-        log::info!("app_response called");
+        log::trace!("app_response called");
         Ok(Response::new(()))
     }
 
     async fn app_gossip(&self, _request: Request<AppGossipMsg>) -> Result<Response<()>, Status> {
-        log::info!("app_gossip called");
+        log::trace!("app_gossip called");
         Ok(Response::new(()))
     }
 
     async fn gather(&self, _request: Request<()>) -> Result<Response<GatherResponse>, Status> {
-        log::info!("gather called");
+        log::trace!("gather called");
         todo!()
     }
 
@@ -702,7 +649,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BlockVerifyRequest>,
     ) -> Result<Response<BlockVerifyResponse>, Status> {
-        log::info!("block_verify called");
+        log::trace!("block_verify called");
         todo!()
     }
 
@@ -710,7 +657,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BlockAcceptRequest>,
     ) -> Result<Response<()>, Status> {
-        log::info!("block_accept called");
+        log::trace!("block_accept called");
         Ok(Response::new(()))
     }
 
@@ -718,7 +665,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BlockRejectRequest>,
     ) -> Result<Response<()>, Status> {
-        log::info!("block_reject called");
+        log::trace!("block_reject called");
         Ok(Response::new(()))
     }
 
@@ -726,7 +673,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<GetAncestorsRequest>,
     ) -> Result<Response<GetAncestorsResponse>, Status> {
-        log::info!("get_ancestors called");
+        log::trace!("get_ancestors called");
         todo!()
     }
 
@@ -734,7 +681,7 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<BatchedParseBlockRequest>,
     ) -> Result<Response<BatchedParseBlockResponse>, Status> {
-        log::info!("batched_parse_block called");
+        log::trace!("batched_parse_block called");
         todo!()
     }
 }
