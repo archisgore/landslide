@@ -1,5 +1,8 @@
-use jsonrpc_core::{IoHandler, Result};
+use crate::encoding;
+use encoding::Checksum;
+use jsonrpc_core::{Error as JsonRpcError, IoHandler, Result};
 use jsonrpc_derive::rpc;
+use serde::{Deserialize, Serialize};
 
 const LOG_PREFIX: &str = "TimestampVM::StaticHandlers: ";
 
@@ -12,16 +15,41 @@ pub fn new() -> IoHandler {
     io
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct EncodeArgs {
+    data: String,
+    encoding: encoding::Encoding,
+    length: i32,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct EncodeReply {
+    bytes: String,
+    encoding: encoding::Encoding,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DecodeArgs {
+    bytes: String,
+    encoding: encoding::Encoding,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DecodeReply {
+    data: String,
+    encoding: encoding::Encoding,
+}
+
 #[rpc(server)]
 pub trait StaticHandlers {
     #[rpc(name = "")]
     fn catch_all(&self) -> Result<u64>;
 
     #[rpc(name = "Encode")]
-    fn encode(&self, data: String, encoding: String, length: i32) -> Result<u64>;
+    fn encode(&self, args: EncodeArgs) -> Result<EncodeReply>;
 
     #[rpc(name = "Decode")]
-    fn decode(&self, a: u64, b: u64) -> Result<u64>;
+    fn decode(&self, args: DecodeArgs) -> Result<DecodeReply>;
 }
 
 pub struct StaticHandlersImpl;
@@ -31,13 +59,56 @@ impl StaticHandlers for StaticHandlersImpl {
         Ok(23)
     }
 
-    fn encode(&self, _data: String, _encoding: String, _length: i32) -> Result<u64> {
+    fn encode(&self, args: EncodeArgs) -> Result<EncodeReply> {
         log::info!("{} Encode called", LOG_PREFIX);
-        Ok(21)
+        if args.data.is_empty() {
+            return Err(JsonRpcError::invalid_params("data length was zero"));
+        }
+
+        let mut rawstr = args.data.clone();
+
+        if args.length > 9 {
+            rawstr.truncate(usize::try_from(args.length).map_err(|e| {
+                log::error!(
+                    "Error truncating data to be encoded from length {} to length {}: {}",
+                    args.data.len(),
+                    args.length,
+                    e
+                );
+                jsonrpc_core::Error::internal_error()
+            })?);
+        }
+
+        let bytes = args
+            .encoding
+            .encode(rawstr.as_bytes(), Checksum::Yes)
+            .map_err(|e| {
+                log::error!("Error encoding data: {}", e);
+                jsonrpc_core::Error::internal_error()
+            })?;
+
+        Ok(EncodeReply {
+            bytes,
+            encoding: args.encoding,
+        })
     }
 
-    fn decode(&self, _a: u64, _b: u64) -> Result<u64> {
+    fn decode(&self, args: DecodeArgs) -> Result<DecodeReply> {
         log::info!("{} Decode called", LOG_PREFIX);
-        Ok(32)
+        let bytes = String::from_utf8(args.encoding.decode(args.bytes, Checksum::Yes).map_err(
+            |e| {
+                log::error!("Error decoding data: {}", e);
+                jsonrpc_core::Error::internal_error()
+            },
+        )?)
+        .map_err(|e| {
+            log::error!("Error creating a utf-8 string from decoded bytes: {}", e);
+            jsonrpc_core::Error::internal_error()
+        })?;
+
+        Ok(DecodeReply {
+            data: bytes,
+            encoding: args.encoding,
+        })
     }
 }

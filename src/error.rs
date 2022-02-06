@@ -37,4 +37,9 @@ pub enum LandslideError {
     },
     #[error("Error occurred parsing the time components: {0}")]
     TimeErrorComponentRange(#[from] time::error::ComponentRange),
+    #[error("Error decoding from Base58: {0}")]
+    Base58Decode(#[from] bs58::decode::Error),
+
+    #[error(transparent)]
+    Encoding(anyhow::Error),
 }

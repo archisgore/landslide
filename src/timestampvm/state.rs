@@ -359,7 +359,9 @@ impl Block {
     pub fn utc8_rfc3339_bytes_to_offsetdatetime(
         timestamp_bytes: Vec<u8>,
     ) -> Result<OffsetDateTime, LandslideError> {
-        let rfc_str = String::from_utf8(timestamp_bytes).context("Unable to parse timestamp as a UTF8 string, which is what the spec expects.")?;
+        let rfc_str = String::from_utf8(timestamp_bytes).context(
+            "Unable to parse timestamp as a UTF8 string, which is what the spec expects.",
+        )?;
 
         Ok(OffsetDateTime::parse(&rfc_str, &Rfc3339)
             .with_context(|| format!("Failed to parse, what was expected to be an RFC3339 string, into a valid OffsetDateTime: {}", rfc_str))?)
