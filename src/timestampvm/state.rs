@@ -7,13 +7,16 @@ use crate::proto::rpcdb::*;
 use crate::proto::DatabaseError;
 use anyhow::{anyhow, Context, Result};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use bytes::BufMut;
 use lazy_static::lazy_static;
 use num::FromPrimitive;
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{Deserializer, Error},
+    ser::Serializer,
+    Deserialize, Serialize,
+};
 use std::convert::AsRef;
 use std::io::Cursor;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 use tonic::transport::Channel;
 use tonic::Response;
@@ -121,10 +124,7 @@ impl State {
         }
     }
 
-    pub async fn get_block(
-        &mut self,
-        block_id: Id,
-    ) -> Result<Option<Block>, LandslideError> {
+    pub async fn get_block(&mut self, block_id: &Id) -> Result<Option<Block>, LandslideError> {
         let key = Self::prefix(BLOCK_STATE_PREFIX, block_id.as_ref());
         let maybe_sb_bytes = self.get(key).await?;
 
@@ -134,9 +134,9 @@ impl State {
         })
     }
 
-    pub async fn put_block(&mut self, block: Block) -> Result<(), LandslideError> {
+    pub async fn put_block(&mut self, mut block: Block) -> Result<(), LandslideError> {
         let value = serde_json::to_vec(&block)?;
-        let key = Self::prefix(BLOCK_STATE_PREFIX, block.id()?.as_ref());
+        let key = Self::prefix(BLOCK_STATE_PREFIX, block.generate_id()?.as_ref());
 
         self.put(key, value).await
     }
@@ -206,35 +206,148 @@ impl State {
     }
 }
 
+// Block is a block on the chain.
+// Each block contains:
+// 1) ParentID
+// 2) Height
+// 3) Timestamp
+// 4) A piece of data (a string)
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Block {
+    parent_id: Id,
+    height: u64,
+    timestamp: Timestamp,
+    data: [u8; BLOCK_DATA_LEN],
+
+    pub status: Status,
+
+    // Id should be generated, not serialized or deserialized
+    #[serde(skip)]
+    id: Option<Id>,
+}
+
+impl Block {
+    pub fn new(
+        parent_id: Id,
+        height: u64,
+        data: [u8; BLOCK_DATA_LEN],
+        timestamp: OffsetDateTime,
+    ) -> Result<Self, LandslideError> {
+        Ok(Block {
+            parent_id,
+            height,
+            timestamp: Timestamp::from_offsetdatetime(timestamp)?,
+            data,
+
+            id: None,
+            status: Status::Unknown,
+        })
+    }
+
+    pub fn parent_id(&self) -> &Id {
+        &self.parent_id
+    }
+
+    pub fn height(&self) -> u64 {
+        self.height
+    }
+
+    pub fn timestamp(&self) -> &Timestamp {
+        &self.timestamp
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, LandslideError> {
+        Ok(serde_json::to_vec(&self)?)
+    }
+
+    pub fn generate_id(&mut self) -> Result<&Id, LandslideError> {
+        if let None = self.id {
+            //generate bytes only for the stuff that makes an identity of the block
+            let mut writer = Vec::new().writer();
+            serde_json::to_writer(&mut writer, &self.parent_id())?;
+            serde_json::to_writer(&mut writer, &self.height())?;
+            serde_json::to_writer(&mut writer, &self.timestamp().bytes())?;
+            serde_json::to_writer(&mut writer, &self.data())?;
+
+            let buf = writer.into_inner();
+            let block_id = Id::generate(&buf)?;
+            self.id = Some(block_id);
+        }
+
+        Ok(self.id.as_ref().expect("in Block::id, the id was just set to Some(_) above and yet is still None. This is next to impossible."))
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum Status {
+    Unknown,
+    Processing,
+    Rejected,
+    Accepted,
+}
+
+impl Status {
+    pub fn fetched(&self) -> bool {
+        match self {
+            Self::Processing => true,
+            _ => self.decided(),
+        }
+    }
+
+    pub fn decided(&self) -> bool {
+        matches!(self, Self::Rejected | Self::Accepted)
+    }
+
+    pub fn valid(&self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+}
+
 // Represents Timestamp as a binary-marshalled array of bytes,
 // or as a Rust-native OffsetDateTime.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Timestamp {
     bytes: Vec<u8>,
 
     // only serialize the bytes which are already serialized
-    #[serde(skip)]
     dt: OffsetDateTime,
 }
 
-impl Deref for Timestamp {
-    type Target = OffsetDateTime;
-    fn deref(&self) -> &<Self as lazy_static::__Deref>::Target {
-        &self.dt
+impl Serialize for Timestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(self.bytes())
     }
 }
 
-impl DerefMut for Timestamp {
-    fn deref_mut(&mut self) -> &mut <Self as lazy_static::__Deref>::Target {
-        &mut self.dt
+impl<'de> Deserialize<'de> for Timestamp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = Deserialize::deserialize(deserializer)?;
+        Timestamp::from_bytes(v).map_err(D::Error::custom)
     }
 }
 
 impl Timestamp {
-    pub fn new(dt: OffsetDateTime) -> Result<Self, LandslideError> {
-        Ok(Timestamp{
-            dt,
+    pub fn from_offsetdatetime(dt: OffsetDateTime) -> Result<Self, LandslideError> {
+        Ok(Timestamp {
+            dt: dt,
             bytes: Self::offsetdatetime_to_golang_binary_marshal_bytes(dt)?,
+        })
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, LandslideError> {
+        Ok(Timestamp {
+            dt: Self::golang_binary_marshal_bytes_to_offsetdatetime(bytes.clone())?,
+            bytes,
         })
     }
 
@@ -400,101 +513,6 @@ impl Timestamp {
             )
         })?;
         Ok(rfc_str.into_bytes())
-    }
-}
-
-// Block is a block on the chain.
-// Each block contains:
-// 1) ParentID
-// 2) Height
-// 3) Timestamp
-// 4) A piece of data (a string)
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Block {
-    parent_id: Id,
-    height: u64,
-    timestamp: Timestamp,
-    data: [u8; BLOCK_DATA_LEN],
-
-    pub status: Status,
-
-    // Id should be generated, not serialized or deserialized
-    #[serde(skip)]
-    id: Option<Id>,
-}
-
-impl Block {
-    pub fn new(
-        parent_id: Id,
-        height: u64,
-        data: [u8; BLOCK_DATA_LEN],
-        timestamp: OffsetDateTime,
-    ) -> Result<Self, LandslideError> {
-        Ok(Block {
-            parent_id,
-            height,
-            data,
-            timestamp: Timestamp::new(timestamp)?,
-
-            id: None,
-            status: Status::Unknown,
-        })
-    }
-
-    pub fn parent_id(&self) -> &Id {
-        &self.parent_id
-    }
-
-    pub fn height(&self) -> &u64 {
-        &self.height
-    }
-
-    pub fn timestamp(&self) -> &Timestamp {
-        &self.timestamp()
-    }
-
-    pub fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    pub fn to_bytes(&self) -> Result<Vec<u8>, LandslideError> {
-        Ok(serde_json::to_vec(&self)?)
-    }
-
-    pub fn id(&self) -> Result<Id, LandslideError> {
-        if let None = self.id {
-            let block_bytes = self.to_bytes()?;
-            let block_id = Id::generate(&block_bytes)?;
-            self.id = Some(block_id);
-        }
-
-        Ok(self.id.expect("in Block::id, the id was just set to Some(_) above and yet is still None. This is next to impossible."))
-    }
-
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-pub enum Status {
-    Unknown,
-    Processing,
-    Rejected,
-    Accepted,
-}
-
-impl Status {
-    pub fn fetched(&self) -> bool {
-        match self {
-            Self::Processing => true,
-            _ => self.decided(),
-        }
-    }
-
-    pub fn decided(&self) -> bool {
-        matches!(self, Self::Rejected | Self::Accepted)
-    }
-
-    pub fn valid(&self) -> bool {
-        !matches!(self, Self::Unknown)
     }
 }
 

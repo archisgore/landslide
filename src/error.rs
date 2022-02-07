@@ -6,6 +6,10 @@ pub fn into_status(err: LandslideError) -> tonic::Status {
     tonic::Status::unknown(format!("{:?}", err))
 }
 
+pub fn into_jsonrpc_error(err: LandslideError) -> jsonrpc_core::error::Error {
+    jsonrpc_core::error::Error::invalid_params(format!("{}", err))
+}
+
 #[derive(Debug, ThisError)]
 pub enum LandslideError {
     #[error("No parent block with id {parent_block_id} found for block with id {block_id}. All blocks have parents (since the genesis block is bootstrapped especially for this purpose). This block is invalid.")]
@@ -43,7 +47,8 @@ pub enum LandslideError {
     GrrPlugin(#[from] grr_plugin::error::Error),
     #[error("Error trying to convert from a slice: {0}")]
     TryFromSlice(#[from] std::array::TryFromSliceError),
-
+    #[error("Error trying to convert from an int: {0}")]
+    TryFromInt(#[from] std::num::TryFromIntError),
     #[error(transparent)]
     Encoding(anyhow::Error),
 }

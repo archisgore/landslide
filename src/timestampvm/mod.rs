@@ -24,7 +24,6 @@ use grr_plugin::Status;
 use hyper::{Body, Request as HyperRequest, Response as HyperResponse};
 use std::collections::HashMap;
 use std::error::Error as StdError;
-use std::ops::Deref;
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::Mutex;
@@ -102,7 +101,6 @@ impl TimestampVmInterior {
             .ok_or(LandslideError::StateNotInitialized)
     }
 
-
     async fn init_genesis(&mut self, genesis_bytes: &[u8]) -> Result<(), LandslideError> {
         log::trace!("initialize called");
 
@@ -132,25 +130,25 @@ impl TimestampVmInterior {
             padded_genesis_data.len(),
             genesis_bytes.len()
         );
-        let genesis_storage_block = StorageBlock::new(
+        let mut genesis_block = Block::new(
             ZERO_ID,
             0,
             padded_genesis_data,
             OffsetDateTime::from_unix_timestamp(0)?,
         )?;
 
-        let genesis_block_id = genesis_storage_block.block.id()?;
+        let genesis_block_id = genesis_block.generate_id()?.clone();
 
         log::info!(
             "Genesis storage block created with Id: {}",
             genesis_block_id
         );
-        state.put_block(genesis_storage_block.clone()).await?;
+        state.put_block(genesis_block.clone()).await?;
         log::info!(
             "Genesis storage block with Id {} put in database successfully.",
             genesis_block_id
         );
-        self.accept_block(genesis_storage_block).await?;
+        self.accept_block(genesis_block).await?;
         log::info!(
             "Genesis storage block with Id {} was accepted by this node.",
             genesis_block_id
@@ -239,14 +237,14 @@ impl TimestampVmInterior {
         Ok(())
     }
 
-    async fn accept_block(&mut self, mut sb: StorageBlock) -> Result<(), LandslideError> {
+    async fn accept_block(&mut self, mut block: Block) -> Result<(), LandslideError> {
         let state = self.mut_state().await?;
 
-        sb.status = BlockStatus::Accepted;
-        let bid = sb.block.id()?;
+        block.status = BlockStatus::Accepted;
+        let bid = block.generate_id()?.clone();
         log::info!("Accepting block with id: {}", bid);
 
-        state.put_block(sb).await?;
+        state.put_block(block).await?;
         log::info!("Put accepted block into database with id: {}", bid);
 
         state.set_last_accepted_block_id(&bid).await?;
@@ -264,14 +262,14 @@ impl TimestampVmInterior {
     // Verify returns nil iff this block is valid.
     // To be valid, it must be that:
     // b.parent.Timestamp < b.Timestamp <= [local time] + 1 hour
-    async fn verify_block(&mut self, block: Block) -> Result<(), LandslideError> {
+    async fn verify_block(&mut self, mut block: Block) -> Result<(), LandslideError> {
         let state = self.mut_state().await?;
 
-        let bid = block.id()?;
+        let bid = block.generate_id()?.clone();
         let parent_id = block.parent_id().clone();
 
-        let parent_block = state.get_block(parent_id).await?.ok_or_else(||
-            LandslideError::Other(anyhow!("TimestampVm::verify_block - Parent Block ID {} was not found in the database for Block being verified with Id {}", block.parent_id, bid)))?;
+        let parent_block = state.get_block(&parent_id).await?.ok_or_else(||
+            LandslideError::Other(anyhow!("TimestampVm::verify_block - Parent Block ID {} was not found in the database for Block being verified with Id {}", parent_id, bid)))?;
 
         // Ensure [b]'s height comes right after its parent's height
         if parent_block.height() + 1 != block.height() {
@@ -281,11 +279,11 @@ impl TimestampVmInterior {
             });
         }
 
-        let bts = block.timestamp.offsetdatetime();
-        let pbts = parent_block.timestamp.offsetdatetime()?;
+        let bts = block.timestamp().offsetdatetime().clone();
+        let pbts = parent_block.timestamp().offsetdatetime().clone();
         // Ensure [b]'s timestamp is after its parent's timestamp.
         if bts < pbts {
-            return Err(LandslideError::Other(anyhow!("The current block {}'s  timestamp {}, is before the parent block {}'s timestamp {}, which is invalid for a Blockchain.", bid, bts, block.parent_id, pbts)));
+            return Err(LandslideError::Other(anyhow!("The current block {}'s  timestamp {}, is before the parent block {}'s timestamp {}, which is invalid for a Blockchain.", bid, bts, parent_id, pbts)));
         }
 
         // Ensure [b]'s timestamp is not more than an hour
@@ -312,20 +310,13 @@ impl TimestampVmInterior {
 
     // Reject sets this block's status to Rejected and saves the status in state
     // Recall that b.vm.DB.Commit() must be called to persist to the DB
-    async fn reject_block(&mut self, block: Block) -> Result<(), LandslideError> {
+    async fn reject_block(&mut self, mut block: Block) -> Result<(), LandslideError> {
         let state = self.mut_state().await?;
 
-        let sb = StorageBlock {
-            block,
-            status: BlockStatus::Rejected,
-        };
-
-        let _block_id = sb.block.id()?;
+        block.status = BlockStatus::Rejected;
 
         // Persist data
-        state.put_block(sb).await?;
-
-        Ok(())
+        state.put_block(block).await
     }
 }
 
@@ -487,17 +478,17 @@ impl Vm for TimestampVm {
             labid
         );
 
-        let sb = state.get_block(labid.clone()).await
+        let block = state.get_block(&labid).await
         .with_context(|| format!("Failed to get Block from database with id {}", labid))
         .map_err(|e| e.into())
         .map_err(into_status)?
         .ok_or_else(||Status::unknown(format!("The storage block with Id {} was not found in the database, which is unusual considering this id was obtained from the database as the last accepted block's id.", labid)))?;
 
-        let u32status = sb.status as u32;
+        let u32status = block.status as u32;
 
         log::trace!(
             "TimestampVm::Initialize obtained last accepted block with status: {:?}(u32 value: {})",
-            sb.status,
+            block.status,
             u32status
         );
 
@@ -505,10 +496,10 @@ impl Vm for TimestampVm {
 
         Ok(Response::new(InitializeResponse {
             last_accepted_id: Vec::from(labid.as_ref()),
-            last_accepted_parent_id: Vec::from(sb.block.parent_id.as_ref()),
-            bytes: Vec::from(sb.block.data),
-            height: sb.block.height,
-            timestamp: sb.block.timestamp.deref().clone(),
+            last_accepted_parent_id: Vec::from(block.parent_id().as_ref()),
+            bytes: Vec::from(block.data()),
+            height: block.height(),
+            timestamp: Vec::from(block.timestamp().bytes()),
             status: u32status,
         }))
     }
@@ -612,39 +603,50 @@ impl Vm for TimestampVm {
         let mut writable_interior = self.interior.write().await;
 
         // Get the value to put in the new block
-        let block_data = writable_interior.mem_pool.pop().ok_or(Status::ok("No blocks to be built."))?;
-    
+        let block_data = writable_interior
+            .mem_pool
+            .pop()
+            .ok_or(Status::ok("No blocks to be built."))?;
+
         let preferred_block_id = match writable_interior.preferred_block_id.take() {
             None => return Err(Status::ok("No preferred block id to be built.")),
             Some(preferred_block_id) => preferred_block_id,
         };
-    
-    
+
         // Gets Preferred Block
         let preferred_block = writable_interior.mut_state().await.map_err(into_status)?
-            .get_block(preferred_block_id).await.map_err(into_status)?
+            .get_block(&preferred_block_id).await.map_err(into_status)?
             .ok_or(Status::unknown("Preferred block couldn't be retrieved from database, despite having a preferred block id."))?;
-        let preferredHeight = preferred_block.block.height;
-    
+        let preferredHeight = preferred_block.height();
+
         // Build the block with preferred height
-        let block = Block::new(preferred_block_id, preferredHeight+1, block_data, OffsetDateTime::now_utc())
-            .map_err(into_status);
-        writable_interior.verify_block(block).await
-            .map_err(into_status);
+        let mut block = Block::new(
+            preferred_block_id,
+            preferredHeight + 1,
+            block_data,
+            OffsetDateTime::now_utc(),
+        )
+        .map_err(into_status)?;
+        writable_interior
+            .verify_block(block.clone())
+            .await
+            .map_err(into_status)?;
 
         // Notify consensus engine that there are more pending data for blocks
         // (if that is the case) when done building this block
         if !writable_interior.mem_pool.is_empty() {
-            writable_interior.notify_block_ready().await.map_err(into_status);
+            writable_interior
+                .notify_block_ready()
+                .await
+                .map_err(into_status);
         }
 
-
-        Ok(Response::new(BuildBlockResponse{
-            id: block.id().map_err(into_status)?.to_vec(),
-            bytes: Vec::from(block.data),
-            height: block.height,
-            parent_id: block.parent_id.to_vec(),
-            timestamp: block.timestamp.to_vec(),
+        Ok(Response::new(BuildBlockResponse {
+            id: block.generate_id().map_err(into_status)?.to_vec(),
+            bytes: Vec::from(block.data()),
+            height: block.height(),
+            parent_id: block.parent_id().to_vec(),
+            timestamp: Vec::from(block.timestamp().bytes()),
         }))
     }
 

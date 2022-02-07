@@ -1,6 +1,7 @@
 use super::state::BLOCK_DATA_LEN;
 use super::TimestampVmInterior;
 use crate::encoding::{Checksum, Encoding};
+use crate::error::into_jsonrpc_error;
 use crate::id::{Id, BYTE_LENGTH as ID_BYTE_LENGTH};
 use jsonrpc_core::{BoxFuture, Error as JsonRpcError, IoHandler, Result};
 use jsonrpc_derive::rpc;
@@ -61,12 +62,7 @@ impl Handlers for HandlersImpl {
         Box::pin(async move {
             let bytes = Encoding::Cb58
                 .decode(args.data, Checksum::Yes)
-                .map_err(|e| {
-                    JsonRpcError::invalid_params(format!(
-                        "Error decoding data as a cb58 block with a checksum: {}",
-                        e
-                    ))
-                })?;
+                .map_err(into_jsonrpc_error)?;
 
             if bytes.len() != BLOCK_DATA_LEN {
                 return Err(JsonRpcError::invalid_params(format!(
@@ -80,9 +76,7 @@ impl Handlers for HandlersImpl {
                 .await
                 .propose_block(bytes.as_ref())
                 .await
-                .map_err(|e| {
-                    JsonRpcError::invalid_params(format!("Failed to propose new block: {}", e))
-                })?;
+                .map_err(into_jsonrpc_error)?;
 
             Ok(ProposeBlockReply { success: true })
         })
@@ -93,15 +87,13 @@ impl Handlers for HandlersImpl {
 
         Box::pin(async move {
             let mut mutable_vm = vm.write().await;
-            let mutable_state = mutable_vm.mut_state().await.map_err(|e| {
-                JsonRpcError::invalid_params(format!("Unable to access mutable state: {}", e))
-            })?;
+            let mutable_state = mutable_vm.mut_state().await.map_err(into_jsonrpc_error)?;
 
             // If an ID is given, parse its string representation to an ids.ID
             // If no ID is given, ID becomes the ID of last accepted block
             let id: Id = match args.id {
                 None => mutable_state.get_last_accepted_block_id().await
-                    .map_err(|e| JsonRpcError::invalid_params(format!("Error retreiving last accepted block id: {}", e)))?
+                    .map_err(into_jsonrpc_error)?
                     .ok_or_else(|| JsonRpcError::invalid_params("No Id parameter provided, and last accepted block id could not be retrieved"))?,
                 Some(idbytes) => {
                     let idbytes_len = idbytes.len();
@@ -112,45 +104,25 @@ impl Handlers for HandlersImpl {
                 },
             };
 
-            let storage_block = mutable_state.get_block(id).await
-                .map_err(|e| JsonRpcError::invalid_params(format!("Unable to get block with provided id (or last accepted block id): {}", e)))?
-                .ok_or_else(||JsonRpcError::invalid_params("Block with the provided id (or last accepted block with id) does not exist."))?;
+            let mut block = mutable_state.get_block(&id).await
+            .map_err(into_jsonrpc_error)?
+            .ok_or_else(||JsonRpcError::invalid_params("Block with the provided id (or last accepted block with id) does not exist."))?;
 
-            let bid = storage_block.block.id().map_err(|e| {
-                JsonRpcError::invalid_params(format!(
-                    "Unable to compute Id for block that was just retrieved: {}",
-                    e
-                ))
-            })?;
+            let bid = block.generate_id().map_err(into_jsonrpc_error)?.clone();
 
             let encoded_data = Encoding::Cb58
-                .encode(storage_block.block.data.as_ref(), Checksum::Yes)
-                .map_err(|e| {
-                    JsonRpcError::invalid_params(format!(
-                        "Unable to encode block data into CB58 encoding with a checksum: {}",
-                        e
-                    ))
-                })?;
+                .encode(block.data().as_ref(), Checksum::Yes)
+                .map_err(into_jsonrpc_error)?;
 
-            let timestamp_unix_i64 = storage_block
-                .block
-                .timestamp
-                .as_offsetdatetime()
-                .map_err(|e| {
-                    JsonRpcError::invalid_params(format!(
-                        "Unable to parse timestamp into an OffsetDatetime structure: {}",
-                        e
-                    ))
-                })?
-                .unix_timestamp();
+            let timestamp_unix_i64 = block.timestamp().offsetdatetime().unix_timestamp();
 
-            let timestamp_unix_u64 = u64::try_from(timestamp_unix_i64).map_err(|e| {
-                JsonRpcError::invalid_params(format!("Unable to convert i64 timestamp u64: {}", e))
-            })?;
+            let timestamp_unix_u64 = u64::try_from(timestamp_unix_i64)
+                .map_err(|e| e.into())
+                .map_err(into_jsonrpc_error)?;
 
             Ok(GetBlockReply {
                 id: Vec::from(bid.as_ref()),
-                parent_id: Vec::from(storage_block.block.parent_id.as_ref()),
+                parent_id: Vec::from(block.parent_id().as_ref()),
                 data: encoded_data,
                 timestamp: timestamp_unix_u64,
             })
