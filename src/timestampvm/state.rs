@@ -244,26 +244,32 @@ impl Block {
             return Err(LandslideError::Other(anyhow!("When conveting from Golang's Binary Marshal'd format to an OffsetDateTime, did not recognize version {}. We only parse Version 1 of the format.", version)));
         }
 
-        let golang_secs = bytes_reader.read_u64::<BigEndian>()
+        let golang_secs = bytes_reader.read_i64::<BigEndian>()
             .context("When conveting from Golang's Binary Marshal'd format to an OffsetDateTime, unable to read the BigEndian 64-bit integer seconds from the timestamp byte vec.")?;
 
-        let golang_nanos = bytes_reader.read_u32::<BigEndian>()
+        let golang_nanos = bytes_reader.read_i32::<BigEndian>()
             .context("When conveting from Golang's Binary Marshal'd format to an OffsetDateTime, unable to read the BigEndian 32-bit integer nanos from the timestamp byte vec.")?;
 
-        let offset_min = bytes_reader.read_u16::<BigEndian>()
+        let offset_mins_raw = bytes_reader.read_i16::<BigEndian>()
             .context("When conveting from Golang's Binary Marshal'd format to an OffsetDateTime, unable to read the BigEndian 16-bit integer offset minutes from the timestamp byte vec.")?;
+
+        let offset_mins = match offset_mins_raw {
+            -1 => 0, // if -1 (golang UTC) then convert to 0 (UTF for sane people)
+            of => i16::try_from(of)
+                .with_context(|| format!("When converting OffsetDateTime to a Golang Binary Marshal'd format, unable to downcast i32 integer {} (the timezone offset in whole seconds) into an i16 integer.", of))?, // Keep the rest as-is
+        };
 
         let golang_nanos_whole: i128 = (golang_secs as i128) * 1000000000 + (golang_nanos as i128);
 
         let unix_timestamp_nanos = Self::nanos_from_unix_epoch(golang_nanos_whole);
 
-        let offset = UtcOffset::from_whole_seconds((offset_min as i32) * 60)
-            .with_context(|| format!("When conveting from Golang's Binary Marshal'd format to an OffsetDateTime, unable to create an offset from minutes: {}", offset_min))?;
+        let offset = UtcOffset::from_whole_seconds((offset_mins as i32) * 60)
+            .with_context(|| format!("When conveting from Golang's Binary Marshal'd format to an OffsetDateTime, unable to create an offset from minutes: {}", offset_mins))?;
 
         let dt_without_original_offset = OffsetDateTime::from_unix_timestamp_nanos(unix_timestamp_nanos)
         .with_context(|| format!("When conveting from Golang's Binary Marshal'd format to an OffsetDateTime, unable to convert unix timestamp nanoseconds {} into an OffsetDateTime", unix_timestamp_nanos))?;
 
-        let dt_with_original_offset = dt_without_original_offset.replace_offset(offset);
+        let dt_with_original_offset = dt_without_original_offset.to_offset(offset);
 
         Ok(dt_with_original_offset)
     }
@@ -447,6 +453,16 @@ mod test {
     #[tokio::test]
     async fn test_dt_conversions() {
         let dt = OffsetDateTime::now_utc();
+        let newdt = Block::golang_binary_marshal_bytes_to_offsetdatetime(
+            Block::offsetdatetime_to_golang_binary_marshal_bytes(dt).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(dt, newdt);
+    }
+
+    #[tokio::test]
+    async fn test_dt_offset_conversions() {
+        let dt = OffsetDateTime::now_utc().to_offset(UtcOffset::from_whole_seconds(300).unwrap());
         let newdt = Block::golang_binary_marshal_bytes_to_offsetdatetime(
             Block::offsetdatetime_to_golang_binary_marshal_bytes(dt).unwrap(),
         )

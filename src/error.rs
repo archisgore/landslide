@@ -39,6 +39,8 @@ pub enum LandslideError {
     TimeErrorComponentRange(#[from] time::error::ComponentRange),
     #[error("Error decoding from Base58: {0}")]
     Base58Decode(#[from] bs58::decode::Error),
+    #[error("Error in the grr-plugin (the Rust-based counterpart to go-plugin): {0}")]
+    GrrPlugin(#[from] grr_plugin::error::Error),
 
     #[error(transparent)]
     Encoding(anyhow::Error),

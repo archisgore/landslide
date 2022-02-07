@@ -33,6 +33,12 @@ pub enum Encoding {
 
 impl Encoding {
     pub fn encode(&self, bytes: &[u8], checksum: Checksum) -> Result<String, LandslideError> {
+        log::trace!(
+            "Encoding with {:?}, {} bytes with {:?}",
+            self,
+            bytes.len(),
+            checksum
+        );
         let checked_bytes = match checksum {
             Checksum::No => Vec::from(bytes),
             Checksum::Yes => {
@@ -40,16 +46,22 @@ impl Encoding {
                     return Err(LandslideError::Encoding(anyhow!("Length of bytes to encode {} is greater than the maximum supported length {}", bytes.len(), MAX_CB58_ENCODE_SIZE)));
                 }
 
-                let checked: Vec<u8> =
-                    [bytes, Self::checksum(bytes, CHECKSUM_LEN)?.as_ref()].concat();
+                let check = Self::checksum(bytes, CHECKSUM_LEN)?;
+                let checked: Vec<u8> = [bytes, check.as_ref()].concat();
 
+                log::trace!(
+                    "Original bytes: {} + Checksum: {} == CheckedBytes: {}",
+                    bytes.len(),
+                    check.len(),
+                    checked.len()
+                );
                 checked
             }
         };
 
         let encoded_str = match self {
             Self::Hex => format!("0x{}", hex::encode(checked_bytes)),
-            Self::Cb58 => bs58::encode(bytes).into_string(),
+            Self::Cb58 => bs58::encode(checked_bytes).into_string(),
             Self::Json => {
                 return Err(LandslideError::Encoding(anyhow!(
                     "JSON encoding is not yet supported (neither in upstream Avalanche)"
@@ -69,6 +81,7 @@ impl Encoding {
             return Ok(Vec::new());
         }
 
+        log::trace!("Decoding bytes: {} with {:?}", encoded_str.len(), self);
         let decoded_bytes = match self {
             Self::Hex => {
                 if !encoded_str.starts_with(HEX_PREFIX) {
@@ -92,6 +105,8 @@ impl Encoding {
             }
         };
 
+        log::trace!("Decoded bytes: {}", decoded_bytes.len());
+
         match checksum {
             Checksum::No => Ok(decoded_bytes),
             Checksum::Yes => {
@@ -101,17 +116,17 @@ impl Encoding {
 
                 let decoded_bytes_len = decoded_bytes.len();
                 let raw_bytes_len = decoded_bytes.len() - CHECKSUM_LEN;
-                let raw_bytes = Vec::from(&decoded_bytes[0..raw_bytes_len - 1]);
+                let raw_bytes = Vec::from(&decoded_bytes[0..raw_bytes_len]);
 
-                let checksum_bytes =
-                    Vec::from(&decoded_bytes[raw_bytes_len..decoded_bytes_len - 1]);
+                let checksum_bytes = Vec::from(&decoded_bytes[raw_bytes_len..decoded_bytes_len]);
                 let generated_checksum_bytes = Self::checksum(raw_bytes.as_ref(), CHECKSUM_LEN)?;
 
                 if generated_checksum_bytes != checksum_bytes {
                     return Err(LandslideError::Encoding(anyhow!(
-                        "Decoded checksum {:?} did not match the generated checksum {:?}",
+                        "Decoded checksum {:?} for did not match the generated checksum {:?} over decoded bytes {:?}",
                         checksum_bytes,
-                        generated_checksum_bytes
+                        generated_checksum_bytes,
+                        raw_bytes,
                     )));
                 }
 
@@ -132,5 +147,111 @@ impl Encoding {
         checksum.resize(CHECKSUM_LEN, 0);
 
         Ok(checksum)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_encode_hex() {
+        let encoded = Encoding::Hex
+            .encode("hello world".as_bytes(), Checksum::No)
+            .unwrap();
+        assert_eq!(encoded, "0x68656c6c6f20776f726c64");
+
+        let encoded = Encoding::Hex
+            .encode("hello world".as_bytes(), Checksum::Yes)
+            .unwrap();
+        assert_eq!(encoded, "0x68656c6c6f20776f726c64b94d27b9");
+    }
+
+    #[tokio::test]
+    async fn test_encode_cb58() {
+        let encoded = Encoding::Cb58
+            .encode("hello world".as_bytes(), Checksum::No)
+            .unwrap();
+        assert_eq!(encoded, "StV1DL6CwTryKyV");
+
+        let encoded = Encoding::Cb58
+            .encode("hello world".as_bytes(), Checksum::Yes)
+            .unwrap();
+        assert_eq!(encoded, "3vQB7B6MrGQZaxCuB6pgY");
+    }
+
+    #[tokio::test]
+    async fn test_decode_hex() {
+        let decoded = Encoding::Hex
+            .decode("0x68656c6c6f20776f726c64".to_string(), Checksum::No)
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap().as_str(), "hello world");
+
+        let decoded = Encoding::Hex
+            .decode(
+                "0x68656c6c6f20776f726c64b94d27b9".to_string(),
+                Checksum::Yes,
+            )
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap().as_str(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_decode_cb58() {
+        let decoded = Encoding::Cb58
+            .decode("StV1DL6CwTryKyV".to_string(), Checksum::No)
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap().as_str(), "hello world");
+
+        let decoded = Encoding::Cb58
+            .decode("3vQB7B6MrGQZaxCuB6pgY".to_string(), Checksum::Yes)
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap().as_str(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_encode_then_decode_hex() {
+        let decoded = Encoding::Hex
+            .decode(
+                Encoding::Hex
+                    .encode("hello world".as_bytes(), Checksum::No)
+                    .unwrap(),
+                Checksum::No,
+            )
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap().as_str(), "hello world");
+
+        let decoded = Encoding::Hex
+            .decode(
+                Encoding::Hex
+                    .encode("hello world".as_bytes(), Checksum::Yes)
+                    .unwrap(),
+                Checksum::Yes,
+            )
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap().as_str(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_encode_then_decode_cb58() {
+        let decoded = Encoding::Cb58
+            .decode(
+                Encoding::Cb58
+                    .encode("hello world".as_bytes(), Checksum::No)
+                    .unwrap(),
+                Checksum::No,
+            )
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap().as_str(), "hello world");
+
+        let decoded = Encoding::Cb58
+            .decode(
+                Encoding::Cb58
+                    .encode("hello world".as_bytes(), Checksum::Yes)
+                    .unwrap(),
+                Checksum::Yes,
+            )
+            .unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap().as_str(), "hello world");
     }
 }

@@ -20,10 +20,7 @@ use anyhow::{anyhow, Context as AnyhowContext, Result};
 use grr_plugin::GRpcBroker;
 use grr_plugin::ServiceId;
 use grr_plugin::Status;
-use hyper::{
-    service::{make_service_fn as make_hyper_service_fn, service_fn as hyper_service_fn},
-    Body, Request as HyperRequest, Response as HyperResponse, Server,
-};
+use hyper::{Body, Request as HyperRequest, Response as HyperResponse};
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::sync::Arc;
@@ -31,10 +28,8 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tonic::body::BoxBody;
+use tonic::transport::Channel;
 use tonic::transport::NamedService;
-use tonic::transport::{Channel, Endpoint, Uri};
-use tonic::Streaming;
-use tower::service_fn as tower_service_fn;
 use tower::Service;
 
 use super::proto::appsender::app_sender_client::*;
@@ -50,8 +45,6 @@ use super::proto::gsharedmemory::shared_memory_client::*;
 use super::proto::gkeystore::keystore_client::*;
 
 use super::proto::galiasreader::alias_reader_client::*;
-
-const GRPC_LOCK_ERROR_MESSAGE: &str = "Failed to lock the GRPC Broker";
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
 // To get a u32 representation of this, just pick any one variant 'as u32'. For example:
@@ -507,7 +500,10 @@ impl Vm for TimestampVm {
         log::trace!("create_handlers called");
         let mut writable_interor = self.interior.write().await;
 
-        let ghttp_server = proto::GHttpServer::new_server(writable_interor.grpc_broker.clone());
+        let ghttp_server = proto::GHttpServer::new_server(
+            writable_interor.grpc_broker.clone(),
+            static_handlers::new(),
+        );
         log::debug!("Creating a new JSON-RPC 2.0 server for static handlers...",);
         let server_id = writable_interor.new_grpc_server(ghttp_server).await?;
 
@@ -535,7 +531,10 @@ impl Vm for TimestampVm {
         log::trace!("create_static_handlers called");
         let mut writable_interor = self.interior.write().await;
 
-        let ghttp_server = proto::GHttpServer::new_server(writable_interor.grpc_broker.clone());
+        let ghttp_server = proto::GHttpServer::new_server(
+            writable_interor.grpc_broker.clone(),
+            static_handlers::new(),
+        );
         log::debug!("Creating a new JSON-RPC 2.0 server for static handlers...",);
         let server_id = writable_interor.new_grpc_server(ghttp_server).await?;
 
@@ -608,7 +607,7 @@ impl Vm for TimestampVm {
         }))
     }
 
-    async fn version(&self, request: Request<()>) -> Result<Response<VersionResponse>, Status> {
+    async fn version(&self, _request: Request<()>) -> Result<Response<VersionResponse>, Status> {
         log::trace!("version called");
         let readable_interior = self.interior.read().await;
         readable_interior.version().await

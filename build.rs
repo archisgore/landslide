@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "proto/messenger.proto",
                 "proto/rpcdb.proto",
                 "proto/greadcloser.proto",
-                "proto/gresponsewriter.proto"
+                "proto/gresponsewriter.proto",
             ],
             &["proto"],
         )?;
