@@ -36,6 +36,10 @@ impl Id {
         Id::from_bytes(Hash::hash(bytes))
     }
 
+    pub fn to_vec(&self) -> Vec<u8> {
+        Vec::from(self.0)
+    }
+
     // Bit returns the bit value at the ith index of the byte array. Returns 0 or 1
     pub fn bit(&self, i: usize) -> bool {
         let byte_index = i / BITS_PER_BYTE;

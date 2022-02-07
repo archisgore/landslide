@@ -10,7 +10,7 @@ use super::context::Context;
 use super::proto;
 use super::proto::vm_proto::*;
 use semver::Version;
-use state::{Block, State, Status as BlockStatus, StorageBlock, BLOCK_DATA_LEN};
+use state::{Block, State, Status as BlockStatus, BLOCK_DATA_LEN};
 use std::collections::BTreeMap;
 use tonic::{Request, Response};
 
@@ -102,27 +102,6 @@ impl TimestampVmInterior {
             .ok_or(LandslideError::StateNotInitialized)
     }
 
-    async fn accept_block(&mut self, mut sb: StorageBlock) -> Result<(), LandslideError> {
-        let state = self.mut_state().await?;
-
-        sb.status = BlockStatus::Accepted;
-        let bid = sb.block.id()?;
-        log::info!("Accepting block with id: {}", bid);
-
-        state.put_block(sb).await?;
-        log::info!("Put accepted block into database with id: {}", bid);
-
-        state.set_last_accepted_block_id(&bid).await?;
-        log::info!("Setting last accepted block id in database to: {}", bid);
-
-        self.verified_blocks.remove(&bid);
-        log::info!(
-            "Removing from verified blocks, since it is now accepted, the block id: {}",
-            bid
-        );
-
-        Ok(())
-    }
 
     async fn init_genesis(&mut self, genesis_bytes: &[u8]) -> Result<(), LandslideError> {
         log::trace!("initialize called");
@@ -144,10 +123,9 @@ impl TimestampVmInterior {
                 String::from_utf8(Vec::from(genesis_bytes)).unwrap(),
             )));
         }
-        let mut padded_genesis_data = Vec::with_capacity(BLOCK_DATA_LEN);
-        padded_genesis_data.extend_from_slice(genesis_bytes);
-        // resize to capacity with 0 filler bytes
-        padded_genesis_data.resize(BLOCK_DATA_LEN, 0);
+
+        let mut padded_genesis_data: [u8; BLOCK_DATA_LEN] = [0; BLOCK_DATA_LEN];
+        padded_genesis_data.copy_from_slice(genesis_bytes);
 
         log::info!(
             "Genesis block created with length {} by padding up from data length {}",
@@ -260,6 +238,95 @@ impl TimestampVmInterior {
 
         Ok(())
     }
+
+    async fn accept_block(&mut self, mut sb: StorageBlock) -> Result<(), LandslideError> {
+        let state = self.mut_state().await?;
+
+        sb.status = BlockStatus::Accepted;
+        let bid = sb.block.id()?;
+        log::info!("Accepting block with id: {}", bid);
+
+        state.put_block(sb).await?;
+        log::info!("Put accepted block into database with id: {}", bid);
+
+        state.set_last_accepted_block_id(&bid).await?;
+        log::info!("Setting last accepted block id in database to: {}", bid);
+
+        self.verified_blocks.remove(&bid);
+        log::info!(
+            "Removing from verified blocks, since it is now accepted, the block id: {}",
+            bid
+        );
+
+        Ok(())
+    }
+
+    // Verify returns nil iff this block is valid.
+    // To be valid, it must be that:
+    // b.parent.Timestamp < b.Timestamp <= [local time] + 1 hour
+    async fn verify_block(&mut self, block: Block) -> Result<(), LandslideError> {
+        let state = self.mut_state().await?;
+
+        let bid = block.id()?;
+        let parent_id = block.parent_id().clone();
+
+        let parent_block = state.get_block(parent_id).await?.ok_or_else(||
+            LandslideError::Other(anyhow!("TimestampVm::verify_block - Parent Block ID {} was not found in the database for Block being verified with Id {}", block.parent_id, bid)))?;
+
+        // Ensure [b]'s height comes right after its parent's height
+        if parent_block.height() + 1 != block.height() {
+            return Err(LandslideError::ParentBlockHeightUnexpected {
+                block_height: block.height(),
+                parent_block_height: parent_block.height(),
+            });
+        }
+
+        let bts = block.timestamp.offsetdatetime();
+        let pbts = parent_block.timestamp.offsetdatetime()?;
+        // Ensure [b]'s timestamp is after its parent's timestamp.
+        if bts < pbts {
+            return Err(LandslideError::Other(anyhow!("The current block {}'s  timestamp {}, is before the parent block {}'s timestamp {}, which is invalid for a Blockchain.", bid, bts, block.parent_id, pbts)));
+        }
+
+        // Ensure [b]'s timestamp is not more than an hour
+        // ahead of this node's time
+        let now = OffsetDateTime::now_utc();
+        let one_hour_from_now = match now.checked_add(Duration::hours(1)) {
+            Some(t) => t,
+            None => {
+                return Err(LandslideError::Other(anyhow!(
+                    "Unable to compute time 1 hour from now."
+                )))
+            }
+        };
+
+        if bts >= one_hour_from_now {
+            return Err(LandslideError::Other(anyhow!("The current block {}'s  timestamp {}, is more than 1 hour in the future compared to this node's time {}", bid, bts, now)));
+        }
+
+        // Put that block to verified blocks in memory
+        self.verified_blocks.insert(bid, block);
+
+        Ok(())
+    }
+
+    // Reject sets this block's status to Rejected and saves the status in state
+    // Recall that b.vm.DB.Commit() must be called to persist to the DB
+    async fn reject_block(&mut self, block: Block) -> Result<(), LandslideError> {
+        let state = self.mut_state().await?;
+
+        let sb = StorageBlock {
+            block,
+            status: BlockStatus::Rejected,
+        };
+
+        let _block_id = sb.block.id()?;
+
+        // Persist data
+        state.put_block(sb).await?;
+
+        Ok(())
+    }
 }
 
 pub struct TimestampVm {
@@ -288,75 +355,6 @@ impl TimestampVm {
                 mem_pool: Vec::new(),
             })),
         })
-    }
-
-    // Verify returns nil iff this block is valid.
-    // To be valid, it must be that:
-    // b.parent.Timestamp < b.Timestamp <= [local time] + 1 hour
-    async fn verify_block(&mut self, block: Block) -> Result<(), LandslideError> {
-        let mut writable_interior = self.interior.write().await;
-        let state = writable_interior.mut_state().await?;
-
-        let bid = block.id()?;
-        let parent_id = block.parent_id.clone();
-
-        let parent_sb = state.get_block(parent_id).await?.ok_or_else(||
-            LandslideError::Other(anyhow!("TimestampVm::verify_block - Parent Block ID {} was not found in the database for Block being verified with Id {}", block.parent_id, bid)))?;
-
-        // Ensure [b]'s height comes right after its parent's height
-        if parent_sb.block.height + 1 != block.height {
-            return Err(LandslideError::ParentBlockHeightUnexpected {
-                block_height: block.height,
-                parent_block_height: parent_sb.block.height,
-            });
-        }
-
-        let bts = block.timestamp.as_offsetdatetime()?;
-        let pbts = parent_sb.block.timestamp.as_offsetdatetime()?;
-        // Ensure [b]'s timestamp is after its parent's timestamp.
-        if bts < pbts {
-            return Err(LandslideError::Other(anyhow!("The current block {}'s  timestamp {}, is before the parent block {}'s timestamp {}, which is invalid for a Blockchain.", bid, bts, block.parent_id, pbts)));
-        }
-
-        // Ensure [b]'s timestamp is not more than an hour
-        // ahead of this node's time
-        let now = OffsetDateTime::now_utc();
-        let one_hour_from_now = match now.checked_add(Duration::hours(1)) {
-            Some(t) => t,
-            None => {
-                return Err(LandslideError::Other(anyhow!(
-                    "Unable to compute time 1 hour from now."
-                )))
-            }
-        };
-
-        if bts >= one_hour_from_now {
-            return Err(LandslideError::Other(anyhow!("The current block {}'s  timestamp {}, is more than 1 hour in the future compared to this node's time {}", bid, bts, now)));
-        }
-
-        // Put that block to verified blocks in memory
-        writable_interior.verified_blocks.insert(bid, block);
-
-        Ok(())
-    }
-
-    // Reject sets this block's status to Rejected and saves the status in state
-    // Recall that b.vm.DB.Commit() must be called to persist to the DB
-    async fn reject_block(&self, block: Block) -> Result<(), LandslideError> {
-        let mut writable_interor = self.interior.write().await;
-        let state = writable_interor.mut_state().await?;
-
-        let sb = StorageBlock {
-            block,
-            status: BlockStatus::Rejected,
-        };
-
-        let _block_id = sb.block.id()?;
-
-        // Persist data
-        state.put_block(sb).await?;
-
-        Ok(())
     }
 }
 
@@ -508,7 +506,7 @@ impl Vm for TimestampVm {
         Ok(Response::new(InitializeResponse {
             last_accepted_id: Vec::from(labid.as_ref()),
             last_accepted_parent_id: Vec::from(sb.block.parent_id.as_ref()),
-            bytes: sb.block.data,
+            bytes: Vec::from(sb.block.data),
             height: sb.block.height,
             timestamp: sb.block.timestamp.deref().clone(),
             status: u32status,
@@ -567,14 +565,14 @@ impl Vm for TimestampVm {
         _request: Request<()>,
     ) -> Result<Response<CreateStaticHandlersResponse>, Status> {
         log::trace!("create_static_handlers called");
-        let mut writable_interor = self.interior.write().await;
+        let mut writable_interior = self.interior.write().await;
 
         let ghttp_server = proto::GHttpServer::new_server(
-            writable_interor.grpc_broker.clone(),
+            writable_interior.grpc_broker.clone(),
             static_handlers::new(),
         );
         log::debug!("Creating a new JSON-RPC 2.0 server for static handlers...",);
-        let server_id = writable_interor.new_grpc_server(ghttp_server).await?;
+        let server_id = writable_interior.new_grpc_server(ghttp_server).await?;
 
         let vm_static_api_service = Handler {
             prefix: "".to_string(),
@@ -610,7 +608,44 @@ impl Vm for TimestampVm {
         _request: Request<()>,
     ) -> Result<Response<BuildBlockResponse>, Status> {
         log::trace!("build_block called");
-        todo!()
+
+        let mut writable_interior = self.interior.write().await;
+
+        // Get the value to put in the new block
+        let block_data = writable_interior.mem_pool.pop().ok_or(Status::ok("No blocks to be built."))?;
+    
+        let preferred_block_id = match writable_interior.preferred_block_id.take() {
+            None => return Err(Status::ok("No preferred block id to be built.")),
+            Some(preferred_block_id) => preferred_block_id,
+        };
+    
+    
+        // Gets Preferred Block
+        let preferred_block = writable_interior.mut_state().await.map_err(into_status)?
+            .get_block(preferred_block_id).await.map_err(into_status)?
+            .ok_or(Status::unknown("Preferred block couldn't be retrieved from database, despite having a preferred block id."))?;
+        let preferredHeight = preferred_block.block.height;
+    
+        // Build the block with preferred height
+        let block = Block::new(preferred_block_id, preferredHeight+1, block_data, OffsetDateTime::now_utc())
+            .map_err(into_status);
+        writable_interior.verify_block(block).await
+            .map_err(into_status);
+
+        // Notify consensus engine that there are more pending data for blocks
+        // (if that is the case) when done building this block
+        if !writable_interior.mem_pool.is_empty() {
+            writable_interior.notify_block_ready().await.map_err(into_status);
+        }
+
+
+        Ok(Response::new(BuildBlockResponse{
+            id: block.id().map_err(into_status)?.to_vec(),
+            bytes: Vec::from(block.data),
+            height: block.height,
+            parent_id: block.parent_id.to_vec(),
+            timestamp: block.timestamp.to_vec(),
+        }))
     }
 
     async fn parse_block(

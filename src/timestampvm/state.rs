@@ -124,7 +124,7 @@ impl State {
     pub async fn get_block(
         &mut self,
         block_id: Id,
-    ) -> Result<Option<StorageBlock>, LandslideError> {
+    ) -> Result<Option<Block>, LandslideError> {
         let key = Self::prefix(BLOCK_STATE_PREFIX, block_id.as_ref());
         let maybe_sb_bytes = self.get(key).await?;
 
@@ -134,9 +134,9 @@ impl State {
         })
     }
 
-    pub async fn put_block(&mut self, sb: StorageBlock) -> Result<(), LandslideError> {
-        let value = serde_json::to_vec(&sb)?;
-        let key = Self::prefix(BLOCK_STATE_PREFIX, sb.block.id()?.as_ref());
+    pub async fn put_block(&mut self, block: Block) -> Result<(), LandslideError> {
+        let value = serde_json::to_vec(&block)?;
+        let key = Self::prefix(BLOCK_STATE_PREFIX, block.id()?.as_ref());
 
         self.put(key, value).await
     }
@@ -206,32 +206,44 @@ impl State {
     }
 }
 
+// Represents Timestamp as a binary-marshalled array of bytes,
+// or as a Rust-native OffsetDateTime.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Timestamp(Vec<u8>);
+pub struct Timestamp {
+    bytes: Vec<u8>,
+
+    // only serialize the bytes which are already serialized
+    #[serde(skip)]
+    dt: OffsetDateTime,
+}
 
 impl Deref for Timestamp {
-    type Target = Vec<u8>;
+    type Target = OffsetDateTime;
     fn deref(&self) -> &<Self as lazy_static::__Deref>::Target {
-        &self.0
+        &self.dt
     }
 }
 
 impl DerefMut for Timestamp {
     fn deref_mut(&mut self) -> &mut <Self as lazy_static::__Deref>::Target {
-        &mut self.0
+        &mut self.dt
     }
 }
 
 impl Timestamp {
-    pub fn as_offsetdatetime(&self) -> Result<OffsetDateTime, LandslideError> {
-        let timestamp_bytes = self.0.clone();
-        Self::golang_binary_marshal_bytes_to_offsetdatetime(timestamp_bytes)
+    pub fn new(dt: OffsetDateTime) -> Result<Self, LandslideError> {
+        Ok(Timestamp{
+            dt,
+            bytes: Self::offsetdatetime_to_golang_binary_marshal_bytes(dt)?,
+        })
     }
 
-    pub fn from_offsetdatetime(dt: OffsetDateTime) -> Result<Self, LandslideError> {
-        Ok(Timestamp(
-            Self::offsetdatetime_to_golang_binary_marshal_bytes(dt)?,
-        ))
+    pub fn offsetdatetime(&self) -> &OffsetDateTime {
+        &self.dt
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 
     // Adapted from: https://cs.opensource.google/go/go/+/refs/tags/go1.17.6:src/time/time.go;l=1169
@@ -399,44 +411,66 @@ impl Timestamp {
 // 4) A piece of data (a string)
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Block {
-    pub parent_id: Id,
-    pub height: u64,
-    pub timestamp: Timestamp,
-    pub data: Vec<u8>,
+    parent_id: Id,
+    height: u64,
+    timestamp: Timestamp,
+    data: [u8; BLOCK_DATA_LEN],
+
+    pub status: Status,
+
+    // Id should be generated, not serialized or deserialized
+    #[serde(skip)]
+    id: Option<Id>,
 }
 
 impl Block {
-    pub fn id(&self) -> Result<Id, LandslideError> {
-        let block_bytes = serde_json::to_vec(&self)?;
-        let block_id = Id::generate(&block_bytes)?;
-        Ok(block_id)
-    }
-}
-
-// The Block structure stored in storage backend (i.e. Database)
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct StorageBlock {
-    pub block: Block,
-    pub status: Status,
-}
-
-impl StorageBlock {
     pub fn new(
         parent_id: Id,
         height: u64,
-        data: Vec<u8>,
+        data: [u8; BLOCK_DATA_LEN],
         timestamp: OffsetDateTime,
     ) -> Result<Self, LandslideError> {
-        Ok(StorageBlock {
-            block: Block {
-                parent_id,
-                height,
-                data,
-                timestamp: Timestamp::from_offsetdatetime(timestamp)?,
-            },
-            status: Status::Processing,
+        Ok(Block {
+            parent_id,
+            height,
+            data,
+            timestamp: Timestamp::new(timestamp)?,
+
+            id: None,
+            status: Status::Unknown,
         })
     }
+
+    pub fn parent_id(&self) -> &Id {
+        &self.parent_id
+    }
+
+    pub fn height(&self) -> &u64 {
+        &self.height
+    }
+
+    pub fn timestamp(&self) -> &Timestamp {
+        &self.timestamp()
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, LandslideError> {
+        Ok(serde_json::to_vec(&self)?)
+    }
+
+    pub fn id(&self) -> Result<Id, LandslideError> {
+        if let None = self.id {
+            let block_bytes = self.to_bytes()?;
+            let block_id = Id::generate(&block_bytes)?;
+            self.id = Some(block_id);
+        }
+
+        Ok(self.id.expect("in Block::id, the id was just set to Some(_) above and yet is still None. This is next to impossible."))
+    }
+
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
