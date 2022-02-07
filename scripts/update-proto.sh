@@ -83,6 +83,22 @@ function messengerproto() {
     wget ${remote_path}${proto_filename} -O ${local_path}${proto_filename} 
 }
 
+function greadcloserproto() {
+    proto_filename="greadcloser.proto"
+    remote_path="https://raw.githubusercontent.com/ava-labs/avalanchego/master/vms/rpcchainvm/ghttp/greadcloser/greadcloserproto/"
+    local_path="./proto/"
+    echo "Updating the messengerproto protobuf definition from upstream AvalancheGo Repo: $remote_path"
+    wget ${remote_path}${proto_filename} -O ${local_path}${proto_filename} 
+}
+
+function gresponsewriterproto() {
+    proto_filename="gresponsewriter.proto"
+    remote_path="https://raw.githubusercontent.com/ava-labs/avalanchego/master/vms/rpcchainvm/ghttp/gresponsewriter/gresponsewriterproto/"
+    local_path="./proto/"
+    echo "Updating the messengerproto protobuf definition from upstream AvalancheGo Repo: $remote_path"
+    wget ${remote_path}${proto_filename} -O ${local_path}${proto_filename} 
+}
+
 vmproto
 prometheusproto
 gkeystoreproto
@@ -93,3 +109,5 @@ appsenderproto
 ghttpproto
 gsubnetlookupproto
 messengerproto
+greadcloserproto
+gresponsewriterproto

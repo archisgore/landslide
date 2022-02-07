@@ -51,6 +51,7 @@ use num_derive::FromPrimitive;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
+use tonic::transport::Channel;
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/message.go#L13
 #[derive(Debug, FromPrimitive, Clone, Copy)]
@@ -104,6 +105,10 @@ impl ghttp::http_server::Http for GHttpServer {
             read_conn_id,
             write_conn_id
         );
+
+        //let channel: Channel = self.grpc_broker.dial_to_host_service(read_conn_id)
+        //    .map_err(|e| e.into())?;
+
         Err(Status::unknown(""))
     }
 }

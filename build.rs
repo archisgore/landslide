@@ -19,6 +19,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "proto/gsubnetlookup.proto",
                 "proto/messenger.proto",
                 "proto/rpcdb.proto",
+                "proto/greadcloser.proto",
+                "proto/gresponsewriter.proto"
             ],
             &["proto"],
         )?;
