@@ -1,5 +1,6 @@
 //NOTE: I really don't understand protobufs. This code is clunky and I appreciate fixes/PRs.
 // I've had a distaste for RPC since CORBA and SOAP didn't make it better.
+mod handlers;
 mod state;
 mod static_handlers;
 
@@ -23,6 +24,7 @@ use grr_plugin::Status;
 use hyper::{Body, Request as HyperRequest, Response as HyperResponse};
 use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::ops::Deref;
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::Mutex;
@@ -33,10 +35,12 @@ use tonic::transport::NamedService;
 use tower::Service;
 
 use super::proto::appsender::app_sender_client::*;
+use super::proto::Message;
 
 use super::proto::rpcdb::database_client::*;
 
 use super::proto::messenger::messenger_client::*;
+use super::proto::messenger::NotifyRequest;
 
 use super::proto::gsubnetlookup::subnet_lookup_client::*;
 
@@ -58,7 +62,7 @@ pub enum Lock {
 // TimestampVM cannot mutably reference self on all its trait methods.
 // Instead it stores an instance of TimestampVmInterior, which is mutable, and can be
 // modified by the calls to TimestampVm's VM trait.
-struct TimestampVmInterior {
+pub struct TimestampVmInterior {
     ctx: Option<Context>,
     version: Version,
     grpc_broker: Arc<Mutex<GRpcBroker>>,
@@ -76,6 +80,9 @@ struct TimestampVmInterior {
     // These are used throughout the function
     verified_blocks: HashMap<Id, Block>,
     preferred_block_id: Option<Id>,
+
+    // blocks ready to propose
+    mem_pool: Vec<[u8; BLOCK_DATA_LEN]>,
 }
 
 impl TimestampVmInterior {
@@ -86,6 +93,12 @@ impl TimestampVmInterior {
     async fn mut_state(&mut self) -> Result<&mut State, LandslideError> {
         self.state
             .as_mut()
+            .ok_or(LandslideError::StateNotInitialized)
+    }
+
+    async fn state(&self) -> Result<&State, LandslideError> {
+        self.state
+            .as_ref()
             .ok_or(LandslideError::StateNotInitialized)
     }
 
@@ -225,16 +238,38 @@ impl TimestampVmInterior {
             version: self.version.to_string(),
         }))
     }
+
+    async fn propose_block(&mut self, data: &[u8]) -> Result<(), LandslideError> {
+        let fixed_array: [u8; BLOCK_DATA_LEN] = data.try_into()?;
+        self.mem_pool.push(fixed_array);
+
+        self.notify_block_ready().await
+    }
+
+    async fn notify_block_ready(&mut self) -> Result<(), LandslideError> {
+        match self.engine_client.as_mut() {
+            Some(engine_client) => {
+                engine_client
+                    .notify(NotifyRequest {
+                        message: Message::PendingTransactions as u32,
+                    })
+                    .await?;
+            }
+            None => log::debug!("dropped message to consensus engine..."),
+        }
+
+        Ok(())
+    }
 }
 
 pub struct TimestampVm {
-    interior: RwLock<TimestampVmInterior>,
+    interior: Arc<RwLock<TimestampVmInterior>>,
 }
 
 impl TimestampVm {
     pub fn new(grpc_broker: Arc<Mutex<GRpcBroker>>) -> Result<TimestampVm, LandslideError> {
         Ok(TimestampVm {
-            interior: RwLock::new(TimestampVmInterior {
+            interior: Arc::new(RwLock::new(TimestampVmInterior {
                 ctx: None,
                 version: Version::new(1, 2, 1),
                 grpc_broker,
@@ -250,7 +285,8 @@ impl TimestampVm {
 
                 verified_blocks: HashMap::new(),
                 preferred_block_id: None,
-            }),
+                mem_pool: Vec::new(),
+            })),
         })
     }
 
@@ -262,7 +298,9 @@ impl TimestampVm {
         let state = writable_interior.mut_state().await?;
 
         let bid = block.id()?;
-        let parent_sb = state.get_block(block.parent_id.as_ref()).await?.ok_or_else(||
+        let parent_id = block.parent_id.clone();
+
+        let parent_sb = state.get_block(parent_id).await?.ok_or_else(||
             LandslideError::Other(anyhow!("TimestampVm::verify_block - Parent Block ID {} was not found in the database for Block being verified with Id {}", block.parent_id, bid)))?;
 
         // Ensure [b]'s height comes right after its parent's height
@@ -273,8 +311,8 @@ impl TimestampVm {
             });
         }
 
-        let bts = block.timestamp_as_offsetdatetime()?;
-        let pbts = parent_sb.block.timestamp_as_offsetdatetime()?;
+        let bts = block.timestamp.as_offsetdatetime()?;
+        let pbts = parent_sb.block.timestamp.as_offsetdatetime()?;
         // Ensure [b]'s timestamp is after its parent's timestamp.
         if bts < pbts {
             return Err(LandslideError::Other(anyhow!("The current block {}'s  timestamp {}, is before the parent block {}'s timestamp {}, which is invalid for a Blockchain.", bid, bts, block.parent_id, pbts)));
@@ -451,7 +489,7 @@ impl Vm for TimestampVm {
             labid
         );
 
-        let sb = state.get_block(labid.as_ref()).await
+        let sb = state.get_block(labid.clone()).await
         .with_context(|| format!("Failed to get Block from database with id {}", labid))
         .map_err(|e| e.into())
         .map_err(into_status)?
@@ -472,7 +510,7 @@ impl Vm for TimestampVm {
             last_accepted_parent_id: Vec::from(sb.block.parent_id.as_ref()),
             bytes: sb.block.data,
             height: sb.block.height,
-            timestamp: sb.block.timestamp,
+            timestamp: sb.block.timestamp.deref().clone(),
             status: u32status,
         }))
     }
@@ -502,12 +540,12 @@ impl Vm for TimestampVm {
 
         let ghttp_server = proto::GHttpServer::new_server(
             writable_interor.grpc_broker.clone(),
-            static_handlers::new(),
+            handlers::new(self.interior.clone()),
         );
-        log::debug!("Creating a new JSON-RPC 2.0 server for static handlers...",);
+        log::debug!("Creating a new JSON-RPC 2.0 server for API handlers...",);
         let server_id = writable_interor.new_grpc_server(ghttp_server).await?;
 
-        let vm_static_api_service = Handler {
+        let vm_api_service = Handler {
             prefix: "".to_string(),
             lock_options: Lock::None as u32,
             server: server_id,
@@ -519,7 +557,7 @@ impl Vm for TimestampVm {
 
         log::debug!("responding with API service.",);
         Ok(Response::new(CreateHandlersResponse {
-            handlers: vec![vm_static_api_service],
+            handlers: vec![vm_api_service],
         }))
     }
 

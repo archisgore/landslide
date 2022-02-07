@@ -68,7 +68,7 @@ use tonic::{Request, Response, Status};
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/message.go#L13
 #[derive(Debug, FromPrimitive, Clone, Copy)]
-enum Message {
+pub enum Message {
     PendingTransactions = 0,
 }
 
@@ -158,10 +158,12 @@ impl ghttp::http_server::Http for GHttpServer {
         let body_bytes = match read_response.errored {
             true => match read_response.error.as_str() {
                 "EOF" => read_response.read,
-                _ => return Err(Status::internal(format!(
+                _ => {
+                    return Err(Status::internal(format!(
                     "Error occurred when reading the ghttp request body from the read channel: {}",
                     read_response.error
-                ))),
+                )))
+                }
             },
             false => read_response.read,
         };
@@ -176,7 +178,7 @@ impl ghttp::http_server::Http for GHttpServer {
             .io_handler
             .handle_request(body_str.as_str())
             .await
-            .ok_or(Status::internal("no response from inner handler"))?;
+            .ok_or_else(|| Status::internal("no response from inner handler"))?;
 
         log::info!(
             "In GHttpClient, response from inner io_handler: {:?}",

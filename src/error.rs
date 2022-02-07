@@ -41,6 +41,8 @@ pub enum LandslideError {
     Base58Decode(#[from] bs58::decode::Error),
     #[error("Error in the grr-plugin (the Rust-based counterpart to go-plugin): {0}")]
     GrrPlugin(#[from] grr_plugin::error::Error),
+    #[error("Error trying to convert from a slice: {0}")]
+    TryFromSlice(#[from] std::array::TryFromSliceError),
 
     #[error(transparent)]
     Encoding(anyhow::Error),

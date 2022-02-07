@@ -12,6 +12,8 @@ use num::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use std::convert::AsRef;
 use std::io::Cursor;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 use tonic::transport::Channel;
 use tonic::Response;
@@ -121,9 +123,9 @@ impl State {
 
     pub async fn get_block(
         &mut self,
-        block_id: &[u8],
+        block_id: Id,
     ) -> Result<Option<StorageBlock>, LandslideError> {
-        let key = Self::prefix(BLOCK_STATE_PREFIX, block_id);
+        let key = Self::prefix(BLOCK_STATE_PREFIX, block_id.as_ref());
         let maybe_sb_bytes = self.get(key).await?;
 
         Ok(match maybe_sb_bytes {
@@ -204,35 +206,37 @@ impl State {
     }
 }
 
-// Block is a block on the chain.
-// Each block contains:
-// 1) ParentID
-// 2) Height
-// 3) Timestamp
-// 4) A piece of data (a string)
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Block {
-    pub parent_id: Id,
-    pub height: u64,
-    pub timestamp: Vec<u8>,
-    pub data: Vec<u8>,
+pub struct Timestamp(Vec<u8>);
+
+impl Deref for Timestamp {
+    type Target = Vec<u8>;
+    fn deref(&self) -> &<Self as lazy_static::__Deref>::Target {
+        &self.0
+    }
 }
 
-impl Block {
-    pub fn id(&self) -> Result<Id, LandslideError> {
-        let block_bytes = serde_json::to_vec(&self)?;
-        let block_id = Id::generate(&block_bytes)?;
-        Ok(block_id)
+impl DerefMut for Timestamp {
+    fn deref_mut(&mut self) -> &mut <Self as lazy_static::__Deref>::Target {
+        &mut self.0
+    }
+}
+
+impl Timestamp {
+    pub fn as_offsetdatetime(&self) -> Result<OffsetDateTime, LandslideError> {
+        let timestamp_bytes = self.0.clone();
+        Self::golang_binary_marshal_bytes_to_offsetdatetime(timestamp_bytes)
     }
 
-    pub fn timestamp_as_offsetdatetime(&self) -> Result<OffsetDateTime, LandslideError> {
-        let timestamp_bytes = self.timestamp.clone();
-        Self::golang_binary_marshal_bytes_to_offsetdatetime(timestamp_bytes)
+    pub fn from_offsetdatetime(dt: OffsetDateTime) -> Result<Self, LandslideError> {
+        Ok(Timestamp(
+            Self::offsetdatetime_to_golang_binary_marshal_bytes(dt)?,
+        ))
     }
 
     // Adapted from: https://cs.opensource.google/go/go/+/refs/tags/go1.17.6:src/time/time.go;l=1169
     // This is HIGHLY UNSTABLE and at the mercy of random go developers whims
-    pub fn golang_binary_marshal_bytes_to_offsetdatetime(
+    fn golang_binary_marshal_bytes_to_offsetdatetime(
         timestamp_bytes: Vec<u8>,
     ) -> Result<OffsetDateTime, LandslideError> {
         let mut bytes_reader = Cursor::new(timestamp_bytes);
@@ -255,8 +259,7 @@ impl Block {
 
         let offset_mins = match offset_mins_raw {
             -1 => 0, // if -1 (golang UTC) then convert to 0 (UTF for sane people)
-            of => i16::try_from(of)
-                .with_context(|| format!("When converting OffsetDateTime to a Golang Binary Marshal'd format, unable to downcast i32 integer {} (the timezone offset in whole seconds) into an i16 integer.", of))?, // Keep the rest as-is
+            of => of,
         };
 
         let golang_nanos_whole: i128 = (golang_secs as i128) * 1000000000 + (golang_nanos as i128);
@@ -274,7 +277,7 @@ impl Block {
         Ok(dt_with_original_offset)
     }
 
-    pub fn offsetdatetime_to_golang_binary_marshal_bytes(
+    fn offsetdatetime_to_golang_binary_marshal_bytes(
         dt: OffsetDateTime,
     ) -> Result<Vec<u8>, LandslideError> {
         let offset_secs: i32 = dt.offset().whole_seconds();
@@ -388,6 +391,28 @@ impl Block {
     }
 }
 
+// Block is a block on the chain.
+// Each block contains:
+// 1) ParentID
+// 2) Height
+// 3) Timestamp
+// 4) A piece of data (a string)
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Block {
+    pub parent_id: Id,
+    pub height: u64,
+    pub timestamp: Timestamp,
+    pub data: Vec<u8>,
+}
+
+impl Block {
+    pub fn id(&self) -> Result<Id, LandslideError> {
+        let block_bytes = serde_json::to_vec(&self)?;
+        let block_id = Id::generate(&block_bytes)?;
+        Ok(block_id)
+    }
+}
+
 // The Block structure stored in storage backend (i.e. Database)
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StorageBlock {
@@ -407,7 +432,7 @@ impl StorageBlock {
                 parent_id,
                 height,
                 data,
-                timestamp: Block::offsetdatetime_to_golang_binary_marshal_bytes(timestamp)?,
+                timestamp: Timestamp::from_offsetdatetime(timestamp)?,
             },
             status: Status::Processing,
         })
@@ -446,15 +471,15 @@ mod test {
     #[tokio::test]
     async fn test_epoch_conversions() {
         let unix_nanos = 500;
-        let nanos = Block::nanos_from_unix_epoch(Block::nanos_from_golang_zero(unix_nanos));
+        let nanos = Timestamp::nanos_from_unix_epoch(Timestamp::nanos_from_golang_zero(unix_nanos));
         assert_eq!(unix_nanos, nanos);
     }
 
     #[tokio::test]
     async fn test_dt_conversions() {
         let dt = OffsetDateTime::now_utc();
-        let newdt = Block::golang_binary_marshal_bytes_to_offsetdatetime(
-            Block::offsetdatetime_to_golang_binary_marshal_bytes(dt).unwrap(),
+        let newdt = Timestamp::golang_binary_marshal_bytes_to_offsetdatetime(
+            Timestamp::offsetdatetime_to_golang_binary_marshal_bytes(dt).unwrap(),
         )
         .unwrap();
         assert_eq!(dt, newdt);
@@ -463,8 +488,8 @@ mod test {
     #[tokio::test]
     async fn test_dt_offset_conversions() {
         let dt = OffsetDateTime::now_utc().to_offset(UtcOffset::from_whole_seconds(300).unwrap());
-        let newdt = Block::golang_binary_marshal_bytes_to_offsetdatetime(
-            Block::offsetdatetime_to_golang_binary_marshal_bytes(dt).unwrap(),
+        let newdt = Timestamp::golang_binary_marshal_bytes_to_offsetdatetime(
+            Timestamp::offsetdatetime_to_golang_binary_marshal_bytes(dt).unwrap(),
         )
         .unwrap();
         assert_eq!(dt, newdt);
