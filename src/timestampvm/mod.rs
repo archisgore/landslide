@@ -338,7 +338,7 @@ impl TimestampVm {
         Ok(TimestampVm {
             interior: Arc::new(RwLock::new(TimestampVmInterior {
                 ctx: None,
-                version: Version::new(1, 2, 1),
+                version: Version::new(0, 1, 0),
                 grpc_broker,
 
                 state: None,
