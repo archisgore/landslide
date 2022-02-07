@@ -232,6 +232,7 @@ impl Block {
         height: u64,
         data: [u8; BLOCK_DATA_LEN],
         timestamp: OffsetDateTime,
+        status: Status,
     ) -> Result<Self, LandslideError> {
         Ok(Block {
             parent_id,
@@ -240,7 +241,7 @@ impl Block {
             data,
 
             id: None,
-            status: Status::Unknown,
+            status,
         })
     }
 
@@ -260,12 +261,8 @@ impl Block {
         &self.data
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, LandslideError> {
-        Ok(serde_json::to_vec(&self)?)
-    }
-
     pub fn generate_id(&mut self) -> Result<&Id, LandslideError> {
-        if let None = self.id {
+        if self.id.is_none() {
             //generate bytes only for the stuff that makes an identity of the block
             let mut writer = Vec::new().writer();
             serde_json::to_writer(&mut writer, &self.parent_id())?;
@@ -339,7 +336,7 @@ impl<'de> Deserialize<'de> for Timestamp {
 impl Timestamp {
     pub fn from_offsetdatetime(dt: OffsetDateTime) -> Result<Self, LandslideError> {
         Ok(Timestamp {
-            dt: dt,
+            dt,
             bytes: Self::offsetdatetime_to_golang_binary_marshal_bytes(dt)?,
         })
     }

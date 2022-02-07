@@ -95,12 +95,6 @@ impl TimestampVmInterior {
             .ok_or(LandslideError::StateNotInitialized)
     }
 
-    async fn state(&self) -> Result<&State, LandslideError> {
-        self.state
-            .as_ref()
-            .ok_or(LandslideError::StateNotInitialized)
-    }
-
     async fn init_genesis(&mut self, genesis_bytes: &[u8]) -> Result<(), LandslideError> {
         log::trace!("initialize called");
 
@@ -135,6 +129,7 @@ impl TimestampVmInterior {
             0,
             padded_genesis_data,
             OffsetDateTime::from_unix_timestamp(0)?,
+            BlockStatus::Processing,
         )?;
 
         let genesis_block_id = genesis_block.generate_id()?.clone();
@@ -279,8 +274,8 @@ impl TimestampVmInterior {
             });
         }
 
-        let bts = block.timestamp().offsetdatetime().clone();
-        let pbts = parent_block.timestamp().offsetdatetime().clone();
+        let bts = *block.timestamp().offsetdatetime();
+        let pbts = *parent_block.timestamp().offsetdatetime();
         // Ensure [b]'s timestamp is after its parent's timestamp.
         if bts < pbts {
             return Err(LandslideError::Other(anyhow!("The current block {}'s  timestamp {}, is before the parent block {}'s timestamp {}, which is invalid for a Blockchain.", bid, bts, parent_id, pbts)));
@@ -606,7 +601,7 @@ impl Vm for TimestampVm {
         let block_data = writable_interior
             .mem_pool
             .pop()
-            .ok_or(Status::ok("No blocks to be built."))?;
+            .ok_or_else(|| Status::ok("No blocks to be built."))?;
 
         let preferred_block_id = match writable_interior.preferred_block_id.take() {
             None => return Err(Status::ok("No preferred block id to be built.")),
@@ -616,15 +611,16 @@ impl Vm for TimestampVm {
         // Gets Preferred Block
         let preferred_block = writable_interior.mut_state().await.map_err(into_status)?
             .get_block(&preferred_block_id).await.map_err(into_status)?
-            .ok_or(Status::unknown("Preferred block couldn't be retrieved from database, despite having a preferred block id."))?;
-        let preferredHeight = preferred_block.height();
+            .ok_or_else(||Status::unknown("Preferred block couldn't be retrieved from database, despite having a preferred block id."))?;
+        let preferred_height = preferred_block.height();
 
         // Build the block with preferred height
         let mut block = Block::new(
             preferred_block_id,
-            preferredHeight + 1,
+            preferred_height + 1,
             block_data,
             OffsetDateTime::now_utc(),
+            BlockStatus::Processing,
         )
         .map_err(into_status)?;
         writable_interior
@@ -638,7 +634,7 @@ impl Vm for TimestampVm {
             writable_interior
                 .notify_block_ready()
                 .await
-                .map_err(into_status);
+                .map_err(into_status)?;
         }
 
         Ok(Response::new(BuildBlockResponse {
