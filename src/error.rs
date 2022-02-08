@@ -1,101 +1,54 @@
-use std::error::Error;
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use super::id::Id;
+use thiserror::Error as ThisError;
+use tonic::Status;
 
-#[derive(Debug)]
+pub fn into_status(err: LandslideError) -> tonic::Status {
+    tonic::Status::unknown(format!("{:?}", err))
+}
+
+pub fn into_jsonrpc_error(err: LandslideError) -> jsonrpc_core::error::Error {
+    jsonrpc_core::error::Error::invalid_params(format!("{}", err))
+}
+
+#[derive(Debug, ThisError)]
 pub enum LandslideError {
+    #[error("No parent block with id {parent_block_id} found for block with id {block_id}. All blocks have parents (since the genesis block is bootstrapped especially for this purpose). This block is invalid.")]
+    NoParentBlock { block_id: Id, parent_block_id: Id },
+    #[error("No ports were available to bind the plugin's gRPC server to.")]
     NoTCPPortAvailable,
+    #[error("This executable is meant to be a go-plugin to other processes. Do not run this directly. The Magic Handshake failed.")]
     GRPCHandshakeMagicCookieValueMismatch,
-    SledError(sled::Error),
-    FromHexError(hex::FromHexError),
-    SerdeJsonError(serde_json::Error),
-    StdIoError(std::io::Error),
-    SetLoggerError(log::SetLoggerError),
-    Generic(String),
-    TonicTransportError(tonic::transport::Error),
-}
-
-#[macro_export]
-macro_rules! log_then_bubble_error {
-    ($e:expr) => {
-        match $e {
-            Err(err) => {
-                log::error!("{},({}:{}), {:?}", function!(), file!(), line!(), err);
-                return Err(err.into());
-            }
-            Ok(o) => o,
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! function {
-    () => {{
-        fn f() {}
-        fn type_name_of<T>(_: T) -> &'static str {
-            std::any::type_name::<T>()
-        }
-        let name = type_name_of(f);
-        &name[..name.len() - 3]
-    }};
-}
-
-impl Display for LandslideError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Self::NoTCPPortAvailable => write!(
-                f,
-                "No ports were available to bind the plugin's gRPC server to."
-            ),
-            Self::GRPCHandshakeMagicCookieValueMismatch => write!(f, "This executable is meant to be a go-plugin to other processes. Do not run this directly. The Magic Handshake failed."),
-            Self::SledError(e) => write!(f, "An error occurred in the Sled database: {:?}", e),
-            Self::FromHexError(e) => write!(f, "Unable to parse bytes from hexadecimal: {:?}", e),
-            Self::SerdeJsonError(e) => write!(
-                f,
-                "An error occurred when serializing/deserializing JSON: {:?}",
-                e
-            ),
-            Self::Generic(s) => write!(f, "{}", s),
-            Self::StdIoError(e) => write!(f, "Error with IO: {:?}", e),
-            Self::SetLoggerError(e) => write!(f, "Error setting logger: {:?}", e),
-            Self::TonicTransportError(e) => write!(f, "Error with tonic (gRPC) transport: {:?}", e),
-        }
-    }
-}
-
-impl Error for LandslideError {}
-
-impl From<sled::Error> for LandslideError {
-    fn from(err: sled::Error) -> Self {
-        Self::SledError(err)
-    }
-}
-
-impl From<hex::FromHexError> for LandslideError {
-    fn from(err: hex::FromHexError) -> Self {
-        Self::FromHexError(err)
-    }
-}
-
-impl From<serde_json::Error> for LandslideError {
-    fn from(err: serde_json::Error) -> Self {
-        Self::SerdeJsonError(err)
-    }
-}
-
-impl From<std::io::Error> for LandslideError {
-    fn from(err: std::io::Error) -> Self {
-        Self::StdIoError(err)
-    }
-}
-
-impl From<log::SetLoggerError> for LandslideError {
-    fn from(err: log::SetLoggerError) -> Self {
-        Self::SetLoggerError(err)
-    }
-}
-
-impl From<tonic::transport::Error> for LandslideError {
-    fn from(err: tonic::transport::Error) -> Self {
-        Self::TonicTransportError(err)
-    }
+    #[error("The VM has not yet been initialized, and it's internal state is empty.")]
+    StateNotInitialized,
+    #[error("Unable to parse bytes from hexadecimal: {0}")]
+    FromHexError(#[from] hex::FromHexError),
+    #[error("An error occurred when serializing/deserializing JSON: {0}")]
+    SerdeJsonError(#[from] serde_json::Error),
+    #[error(transparent)]
+    StdIoError(#[from] std::io::Error),
+    #[error("Unable to set logger: {0}")]
+    SetLoggerError(#[from] log::SetLoggerError),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+    #[error("Error with tonic (gRPC) transport: {0}")]
+    TonicTransportError(#[from] tonic::transport::Error),
+    #[error(transparent)]
+    Status(#[from] Status),
+    #[error("Parent block height, {parent_block_height}, should have been exactly 1 greater than the block's height {block_height}. This block is invalid.")]
+    ParentBlockHeightUnexpected {
+        block_height: u64,
+        parent_block_height: u64,
+    },
+    #[error("Error occurred parsing the time components: {0}")]
+    TimeErrorComponentRange(#[from] time::error::ComponentRange),
+    #[error("Error decoding from Base58: {0}")]
+    Base58Decode(#[from] bs58::decode::Error),
+    #[error("Error in the grr-plugin (the Rust-based counterpart to go-plugin): {0}")]
+    GrrPlugin(#[from] grr_plugin::error::Error),
+    #[error("Error trying to convert from a slice: {0}")]
+    TryFromSlice(#[from] std::array::TryFromSliceError),
+    #[error("Error trying to convert from an int: {0}")]
+    TryFromInt(#[from] std::num::TryFromIntError),
+    #[error(transparent)]
+    Encoding(anyhow::Error),
 }
