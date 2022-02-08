@@ -449,6 +449,7 @@ impl Vm for TimestampVm {
                 return Err(Status::unknown("zero versioned_db_clients were found. Unable to proceed without a versioned database."));
             }
             if let Some(db_client) = versioned_db_clients.values().rev().next() {
+                log::info!("Initialized state for this VM");
                 let state = State::new(db_client.clone());
                 writable_interior.state = Some(state);
             } else {
@@ -467,6 +468,7 @@ impl Vm for TimestampVm {
 
         log::trace!("TimestampVm::Initialize genesis initialized");
 
+        log::info!("Using state for this VM");
         let state = writable_interior.mut_state_status().await?;
 
         let labid = state
@@ -521,8 +523,9 @@ impl Vm for TimestampVm {
     async fn shutdown(&self, _request: Request<()>) -> Result<Response<()>, Status> {
         log::trace!("shutdown called");
         let mut writable_interior = self.interior.write().await;
-        let state = writable_interior.mut_state().await.map_err(into_status)?;
-        state.close().await.map_err(into_status)?;
+        if let Some(state) = writable_interior.state.as_mut() {
+            state.close().await.map_err(into_status)?;
+        }
 
         Ok(Response::new(()))
     }
