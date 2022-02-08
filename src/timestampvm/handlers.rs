@@ -2,7 +2,7 @@ use super::state::BLOCK_DATA_LEN;
 use super::TimestampVmInterior;
 use crate::encoding::{Checksum, Encoding};
 use crate::error::into_jsonrpc_error;
-use crate::id::{Id, BYTE_LENGTH as ID_BYTE_LENGTH};
+use crate::id::Id;
 use jsonrpc_core::{BoxFuture, Error as JsonRpcError, IoHandler, Result};
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
@@ -96,10 +96,7 @@ impl Handlers for HandlersImpl {
                     .map_err(into_jsonrpc_error)?
                     .ok_or_else(|| JsonRpcError::invalid_params("No Id parameter provided, and last accepted block id could not be retrieved"))?,
                 Some(idbytes) => {
-                    let idbytes_len = idbytes.len();
-                    let id_array: [u8; ID_BYTE_LENGTH] = idbytes.try_into()
-                        .map_err(|_| JsonRpcError::invalid_params(format!("Unable to convert a byte array of length {} into a byte array of fixed block length {}", idbytes_len, BLOCK_DATA_LEN)))?;
-                    Id::from_bytes(id_array)
+                    Id::from_slice(&idbytes)
                         .map_err(|e| JsonRpcError::invalid_params(format!("Unable to convert provided Id bytes into a valid Id: {}", e)))?
                 },
             };

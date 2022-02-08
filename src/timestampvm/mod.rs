@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use tonic::{Request, Response};
 
 use super::error::into_status;
-use crate::id::{Id, ZERO_ID};
+use crate::id::{Id, ROOT_PARENT_ID};
 use crate::proto::vm_proto::vm_server::Vm;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use grr_plugin::GRpcBroker;
@@ -125,7 +125,7 @@ impl TimestampVmInterior {
             genesis_bytes.len()
         );
         let mut genesis_block = Block::new(
-            ZERO_ID,
+            ROOT_PARENT_ID,
             0,
             padded_genesis_data,
             OffsetDateTime::from_unix_timestamp(0)?,
@@ -305,13 +305,19 @@ impl TimestampVmInterior {
 
     // Reject sets this block's status to Rejected and saves the status in state
     // Recall that b.vm.DB.Commit() must be called to persist to the DB
+    #[allow(dead_code)]
     async fn reject_block(&mut self, mut block: Block) -> Result<(), LandslideError> {
         let state = self.mut_state().await?;
 
         block.status = BlockStatus::Rejected;
 
-        // Persist data
-        state.put_block(block).await
+        let block_id = block.generate_id()?.clone();
+
+        state.put_block(block).await?;
+
+        self.verified_blocks.remove(&block_id);
+
+        Ok(())
     }
 }
 
@@ -511,6 +517,9 @@ impl Vm for TimestampVm {
 
     async fn shutdown(&self, _request: Request<()>) -> Result<Response<()>, Status> {
         log::trace!("shutdown called");
+        let mut writable_interior = self.interior.write().await;
+        let state = writable_interior.mut_state().await.map_err(into_status)?;
+        state.close().await.map_err(into_status)?;
 
         Ok(Response::new(()))
     }
@@ -648,10 +657,37 @@ impl Vm for TimestampVm {
 
     async fn parse_block(
         &self,
-        _request: Request<ParseBlockRequest>,
+        request: Request<ParseBlockRequest>,
     ) -> Result<Response<ParseBlockResponse>, Status> {
         log::trace!("parse_block called");
-        todo!()
+        let pbr = request.into_inner();
+
+        let mut block: Block = serde_json::from_slice(pbr.bytes.as_ref())
+            .map_err(|e| e.into())
+            .map_err(into_status)?;
+
+        block.status = BlockStatus::Processing;
+
+        let mut writable_interior = self.interior.write().await;
+        let state = writable_interior.mut_state().await.map_err(into_status)?;
+        let mut ret_block = if let Some(existing_block) = state
+            .get_block(block.generate_id().map_err(into_status)?)
+            .await
+            .map_err(into_status)?
+        {
+            // if we already have this block, return that
+            existing_block
+        } else {
+            block
+        };
+
+        Ok(Response::new(ParseBlockResponse {
+            id: ret_block.generate_id().map_err(into_status)?.to_vec(),
+            parent_id: ret_block.parent_id().to_vec(),
+            status: ret_block.status as u32,
+            height: ret_block.height(),
+            timestamp: Vec::from(ret_block.timestamp().bytes()),
+        }))
     }
 
     async fn get_block(
@@ -664,9 +700,14 @@ impl Vm for TimestampVm {
 
     async fn set_preference(
         &self,
-        _request: Request<SetPreferenceRequest>,
+        request: Request<SetPreferenceRequest>,
     ) -> Result<Response<()>, Status> {
         log::trace!("set_preference called");
+        let spr = request.into_inner();
+
+        let mut writable_interior = self.interior.write().await;
+        writable_interior.set_preference(Id::from_slice(&spr.id).map_err(into_status)?).await;
+
         Ok(Response::new(()))
     }
 

@@ -1,7 +1,7 @@
 // Copied from: https://github.com/ava-labs/timestampvm/blob/main/timestampvm/block.go
 
 use crate::error::LandslideError;
-use crate::id::{Id, BYTE_LENGTH as ID_BYTE_LENGTH};
+use crate::id::Id;
 use crate::proto::rpcdb::database_client::*;
 use crate::proto::rpcdb::*;
 use crate::proto::DatabaseError;
@@ -57,12 +57,6 @@ impl State {
         }
     }
 
-    // Commit commits pending operations to baseDB
-    pub async fn commit(&mut self) -> Result<(), LandslideError> {
-        log::warn!("State::commit is a NOOP since underlying database has no commit method.");
-        Ok(())
-    }
-
     // Close closes the underlying base database
     pub async fn close(&mut self) -> Result<Response<CloseResponse>, LandslideError> {
         Ok(self.db.close(CloseRequest {}).await?)
@@ -103,6 +97,7 @@ impl State {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn delete(&mut self, key: Vec<u8>) -> Result<(), LandslideError> {
         let delete_response = self.db.delete(DeleteRequest { key }).await?.into_inner();
 
@@ -141,34 +136,17 @@ impl State {
         self.put(key, value).await
     }
 
+    #[allow(dead_code)]
     pub async fn delete_block(&mut self, block_id: &Id) -> Result<(), LandslideError> {
         let key = Self::prefix(BLOCK_STATE_PREFIX, block_id.as_ref());
         self.delete(key).await
     }
 
     pub async fn get_last_accepted_block_id(&mut self) -> Result<Option<Id>, LandslideError> {
-        let maybe_block_id_bytes = self.get(self.last_accepted_block_id_key.clone()).await?;
-
-        Ok(match maybe_block_id_bytes {
-            Some(block_id_bytes) => {
-                if block_id_bytes.len() != ID_BYTE_LENGTH {
-                    let errmsg = anyhow!("Id byte length was expected to be {}, but the database provided the last accepted id of length {}. The Id saved to the database is not the same structure as the one being retrieved into. This is a critical failure.", ID_BYTE_LENGTH, block_id_bytes.len());
-                    log::error!("{}", errmsg);
-                    return Err(LandslideError::Other(errmsg));
-                }
-                let mut block_id_byte_array: [u8; ID_BYTE_LENGTH] = [0; ID_BYTE_LENGTH];
-                for (i, b) in block_id_bytes.into_iter().enumerate() {
-                    block_id_byte_array[i] = b;
-                }
-
-                log::info!(
-                    "Getting last accepted block id bytes: {:?}",
-                    &block_id_byte_array
-                );
-                Some(Id::from_bytes(block_id_byte_array)?)
-            }
-            None => None,
-        })
+        match self.get(self.last_accepted_block_id_key.clone()).await? {
+            Some(block_id_bytes) => Ok(Some(Id::from_slice(&block_id_bytes)?)),
+            None => Ok(None),
+        }
     }
 
     pub async fn set_last_accepted_block_id(&mut self, id: &Id) -> Result<(), LandslideError> {
@@ -271,7 +249,7 @@ impl Block {
             serde_json::to_writer(&mut writer, &self.data())?;
 
             let buf = writer.into_inner();
-            let block_id = Id::generate(&buf)?;
+            let block_id = Id::generate(&buf);
             self.id = Some(block_id);
         }
 
@@ -288,6 +266,7 @@ pub enum Status {
 }
 
 impl Status {
+    #[allow(dead_code)]
     pub fn fetched(&self) -> bool {
         match self {
             Self::Processing => true,
@@ -295,10 +274,12 @@ impl Status {
         }
     }
 
+    #[allow(dead_code)]
     pub fn decided(&self) -> bool {
         matches!(self, Self::Rejected | Self::Accepted)
     }
 
+    #[allow(dead_code)]
     pub fn valid(&self) -> bool {
         !matches!(self, Self::Unknown)
     }
@@ -487,6 +468,7 @@ impl Timestamp {
 
     // This function should be used if/when Avalanche resolves this issue:
     // https://github.com/ava-labs/avalanchego/issues/1003
+    #[allow(dead_code)]
     pub fn utc8_rfc3339_bytes_to_offsetdatetime(
         timestamp_bytes: Vec<u8>,
     ) -> Result<OffsetDateTime, LandslideError> {
@@ -500,6 +482,7 @@ impl Timestamp {
 
     // This function should be used if/when Avalanche resolves this issue:
     // https://github.com/ava-labs/avalanchego/issues/1003
+    #[allow(dead_code)]
     pub fn offsetdatetime_to_utc8_rfc3339_bytes(
         dt: OffsetDateTime,
     ) -> Result<Vec<u8>, LandslideError> {

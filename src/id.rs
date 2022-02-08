@@ -9,7 +9,9 @@ use std::str::FromStr;
 use zerocopy::{AsBytes, FromBytes, Unaligned};
 
 pub const BYTE_LENGTH: usize = 32;
-pub const ZERO_ID: Id = Id([0; BYTE_LENGTH]);
+const BITS_PER_BYTE: usize = 8;
+
+pub const ROOT_PARENT_ID: Id = Id([0; BYTE_LENGTH]);
 
 #[derive(
     Debug, Serialize, Deserialize, AsBytes, FromBytes, Unaligned, Hash, PartialEq, Eq, Clone,
@@ -23,17 +25,20 @@ impl AsRef<[u8]> for Id {
     }
 }
 
-const BITS_PER_BYTE: usize = 8;
-
 impl Id {
     // Create an Id wrapping over an array if bytes
-    pub fn from_bytes(bytes: [u8; BYTE_LENGTH]) -> Result<Id, LandslideError> {
-        Ok(Id(bytes))
+    pub fn new(bytes: [u8; BYTE_LENGTH]) -> Id {
+        Id(bytes)
+    }
+
+    pub fn from_slice(slice: &[u8]) -> Result<Id, LandslideError> {
+        let bytes: [u8; BYTE_LENGTH] = slice.try_into()?;
+        Ok(Id::new(bytes))
     }
 
     // Generate an Id for an arbitrary set of bytes.
-    pub fn generate(bytes: &[u8]) -> Result<Id, LandslideError> {
-        Id::from_bytes(Hash::hash(bytes))
+    pub fn generate(bytes: &[u8]) -> Id {
+        Id::new(Hash::hash(bytes))
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
