@@ -53,8 +53,11 @@ use super::proto::galiasreader::alias_reader_client::*;
 // To get a u32 representation of this, just pick any one variant 'as u32'. For example:
 //     lock: Lock::WriteLock as u32
 pub enum Lock {
-    Write,
+    #[allow(dead_code)]
+    Write = 0,
+    #[allow(dead_code)]
     Read,
+
     None,
 }
 
@@ -706,7 +709,9 @@ impl Vm for TimestampVm {
         let spr = request.into_inner();
 
         let mut writable_interior = self.interior.write().await;
-        writable_interior.set_preference(Id::from_slice(&spr.id).map_err(into_status)?).await;
+        writable_interior
+            .set_preference(Id::from_slice(&spr.id).map_err(into_status)?)
+            .await;
 
         Ok(Response::new(()))
     }
