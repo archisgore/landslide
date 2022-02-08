@@ -14,7 +14,7 @@ echo "        export LANDSLIDE_GIT_ROOT=\$PWD/target/release/landslide"
 echo 
 echo "        # Optionally if you want to configure the landslide logger"
 echo "        # in the log4rs configuration format"
-echo "        export LANDSLIDE_LOG_CONFIG_FILE=<path/to/log_config_file>"
+echo "        # export LANDSLIDE_LOG_CONFIG_FILE=<path/to/log_config_file>"
 echo
 echo "        # an example file resides under the landslide git root"
 echo "        export LANDSLIDE_LOG_CONFIG_FILE=\$PWD/log_config.yml"
