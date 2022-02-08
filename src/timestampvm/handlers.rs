@@ -57,6 +57,7 @@ pub struct HandlersImpl {
 
 impl Handlers for HandlersImpl {
     fn propose_block(&self, args: ProposeBlockArgs) -> BoxFuture<Result<ProposeBlockReply>> {
+        log::trace!("propose_block called");
         let vm = self.vm.clone();
 
         Box::pin(async move {
@@ -83,6 +84,7 @@ impl Handlers for HandlersImpl {
     }
 
     fn get_block(&self, args: GetBlockArgs) -> BoxFuture<Result<GetBlockReply>> {
+        log::info!("get_block called");
         let vm = self.vm.clone();
 
         Box::pin(async move {
