@@ -10,7 +10,7 @@ echo
 echo "To run Avalanche on this host with Landslide as your Custom VM:"
 echo "  1. Export the following environment:"
 echo "        export LANDSLIDE_GIT_ROOT=\$PWD"
-echo "        export LANDSLIDE_GIT_ROOT=\$PWD/target/release/landslide"
+echo "        export LANDSLIDE_BIN_PATH=\$PWD/target/release/landslide"
 echo 
 echo "        # Optionally if you want to configure the landslide logger"
 echo "        # in the log4rs configuration format"
