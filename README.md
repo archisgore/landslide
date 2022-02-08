@@ -7,7 +7,17 @@ Curious about how to run Rust-based smart contracts, or just custom VMs for [Ava
 
 ### Build
 
-Run standard `cargo build`.
+`cargo build`
+
+### Build and run
+
+In the landslide git root directory:
+
+```.bash
+./scripts/build.sh
+```
+
+The script will provide instructions on how to run landslide in avalanche.
 
 ### Update protobuf definitions from upstream
 
