@@ -99,7 +99,7 @@ impl TimestampVmInterior {
     }
 
     async fn init_genesis(&mut self, genesis_bytes: &[u8]) -> Result<(), LandslideError> {
-        log::trace!("initialize called");
+        log::trace!("initialize genesis called");
 
         let state = self.mut_state().await?;
 
@@ -119,8 +119,10 @@ impl TimestampVmInterior {
             )));
         }
 
-        let mut padded_genesis_data: [u8; BLOCK_DATA_LEN] = [0; BLOCK_DATA_LEN];
-        padded_genesis_data.copy_from_slice(genesis_bytes);
+        let mut padded_genesis_vec = Vec::from(genesis_bytes);
+        padded_genesis_vec.resize(BLOCK_DATA_LEN, 0);
+
+        let padded_genesis_data: [u8; BLOCK_DATA_LEN] = padded_genesis_vec.as_slice().try_into()?;
 
         log::info!(
             "Genesis block created with length {} by padding up from data length {}",
@@ -161,6 +163,7 @@ impl TimestampVmInterior {
     }
 
     async fn set_preference(&mut self, preferred_block_id: Id) {
+        log::trace!("setting preferred block id...");
         self.preferred_block_id = Some(preferred_block_id)
     }
 
@@ -169,6 +172,10 @@ impl TimestampVmInterior {
         service_id: ServiceId,
         target: &str,
     ) -> Result<Channel, Status> {
+        log::trace!(
+            "opening a new connection to host for service_id: {}",
+            service_id
+        );
         Ok(self
             .grpc_broker
             .lock()
@@ -195,6 +202,7 @@ impl TimestampVmInterior {
         <S as Service<HyperRequest<Body>>>::Future: Send + 'static,
         <S as Service<HyperRequest<Body>>>::Error: Into<Box<dyn StdError + Send + Sync>> + Send,
     {
+        log::trace!("Opening a new gRPC server through the grpc broker...");
         self.grpc_broker
             .lock()
             .await
@@ -214,6 +222,7 @@ impl TimestampVmInterior {
     }
 
     async fn propose_block(&mut self, data: &[u8]) -> Result<(), LandslideError> {
+        log::trace!("Proposing a new block...");
         let fixed_array: [u8; BLOCK_DATA_LEN] = data.try_into()?;
         self.mem_pool.push(fixed_array);
 
@@ -221,6 +230,7 @@ impl TimestampVmInterior {
     }
 
     async fn notify_block_ready(&mut self) -> Result<(), LandslideError> {
+        log::trace!("Notifying engine that a new block is ready...");
         match self.engine_client.as_mut() {
             Some(engine_client) => {
                 engine_client
@@ -261,6 +271,7 @@ impl TimestampVmInterior {
     // To be valid, it must be that:
     // b.parent.Timestamp < b.Timestamp <= [local time] + 1 hour
     async fn verify_block(&mut self, mut block: Block) -> Result<(), LandslideError> {
+        log::trace!("Verifying block...");
         let state = self.mut_state().await?;
 
         let bid = block.generate_id()?.clone();
@@ -268,13 +279,16 @@ impl TimestampVmInterior {
 
         let parent_block = state.get_block(&parent_id).await?.ok_or_else(||
             LandslideError::Other(anyhow!("TimestampVm::verify_block - Parent Block ID {} was not found in the database for Block being verified with Id {}", parent_id, bid)))?;
+        log::info!("retrieved parent block");
 
         // Ensure [b]'s height comes right after its parent's height
         if parent_block.height() + 1 != block.height() {
-            return Err(LandslideError::ParentBlockHeightUnexpected {
+            let err = LandslideError::ParentBlockHeightUnexpected {
                 block_height: block.height(),
                 parent_block_height: parent_block.height(),
-            });
+            };
+            log::error!("{}", err);
+            return Err(err);
         }
 
         let bts = *block.timestamp().offsetdatetime();
@@ -300,6 +314,7 @@ impl TimestampVmInterior {
             return Err(LandslideError::Other(anyhow!("The current block {}'s  timestamp {}, is more than 1 hour in the future compared to this node's time {}", bid, bts, now)));
         }
 
+        log::info!("Adding block to list of verified blocks: {:?}", bid);
         // Put that block to verified blocks in memory
         self.verified_blocks.insert(bid, block);
 
