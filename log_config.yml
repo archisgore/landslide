@@ -11,7 +11,7 @@ appenders:
     kind: file
     path: "/tmp/landslide.log"
     encoder:
-      pattern: "{d} - {M} {f}#{L} - {l}: {m}{n}"
+      pattern: "{d} - Process {P} {M} {f}#{L} - {l}: {m}{n}"
 
 # Set the default logging level to "warn" and attach the "stdout" appender to the root
 root:

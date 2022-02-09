@@ -49,6 +49,9 @@ use super::proto::gkeystore::keystore_client::*;
 
 use super::proto::galiasreader::alias_reader_client::*;
 
+const STATIC_HANDLERS_SERVICE_ID: ServiceId = 5;
+const VM_API_HANDLERS_SERVICE_ID: ServiceId = 2;
+
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
 // To get a u32 representation of this, just pick any one variant 'as u32'. For example:
 //     lock: Lock::WriteLock as u32
@@ -192,7 +195,11 @@ impl TimestampVmInterior {
             .map_err(into_status)?)
     }
 
-    pub async fn new_grpc_server<S>(&mut self, server: S) -> Result<ServiceId, Status>
+    pub async fn new_grpc_server<S>(
+        &mut self,
+        service_id: ServiceId,
+        server: S,
+    ) -> Result<ServiceId, Status>
     where
         S: Service<HyperRequest<Body>, Response = HyperResponse<BoxBody>>
             + NamedService
@@ -206,7 +213,7 @@ impl TimestampVmInterior {
         self.grpc_broker
             .lock()
             .await
-            .new_grpc_server(server)
+            .new_grpc_server_with_service_id(service_id, server)
             .await
             .context("Unable to create a new GHttp Server server for handlers")
             .map_err(|e| e.into())
@@ -388,7 +395,7 @@ impl Vm for TimestampVm {
         log::trace!("Initialize obtained VM version: {:?}", version);
 
         let ir = request.into_inner();
-        log::trace!("Full Request: {:?}", ir,);
+        log::info!("Full Request: {:?}", ir,);
 
         writable_interior.ctx = Some(Context {
             network_id: ir.network_id,
@@ -549,27 +556,29 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<CreateHandlersResponse>, Status> {
-        log::trace!("create_handlers called");
+        log::info!("create_handlers called");
         let mut writable_interor = self.interior.write().await;
 
         let ghttp_server = proto::GHttpServer::new_server(
             writable_interor.grpc_broker.clone(),
             handlers::new(self.interior.clone()),
         );
-        log::debug!("Creating a new JSON-RPC 2.0 server for API handlers...",);
-        let server_id = writable_interor.new_grpc_server(ghttp_server).await?;
+        log::info!("Creating a new JSON-RPC 2.0 server for API handlers...",);
+        let server_id = writable_interor
+            .new_grpc_server(VM_API_HANDLERS_SERVICE_ID, ghttp_server)
+            .await?;
 
         let vm_api_service = Handler {
             prefix: "".to_string(),
             lock_options: Lock::None as u32,
             server: server_id,
         };
-        log::debug!(
-            "Created a new JSON-RPC 2.0 server for handlers with server_id: {}",
+        log::info!(
+            "Created a new API JSON-RPC 2.0 server for handlers with server_id: {}",
             server_id
         );
 
-        log::debug!("responding with API service.",);
+        log::info!("responding with API handler service.",);
         Ok(Response::new(CreateHandlersResponse {
             handlers: vec![vm_api_service],
         }))
@@ -580,27 +589,29 @@ impl Vm for TimestampVm {
         &self,
         _request: Request<()>,
     ) -> Result<Response<CreateStaticHandlersResponse>, Status> {
-        log::trace!("create_static_handlers called");
+        log::info!("create_static_handlers called");
         let mut writable_interior = self.interior.write().await;
 
         let ghttp_server = proto::GHttpServer::new_server(
             writable_interior.grpc_broker.clone(),
             static_handlers::new(),
         );
-        log::debug!("Creating a new JSON-RPC 2.0 server for static handlers...",);
-        let server_id = writable_interior.new_grpc_server(ghttp_server).await?;
+        log::info!("Creating a new JSON-RPC 2.0 server for static handlers...",);
+        let server_id = writable_interior
+            .new_grpc_server(STATIC_HANDLERS_SERVICE_ID, ghttp_server)
+            .await?;
 
         let vm_static_api_service = Handler {
             prefix: "".to_string(),
             lock_options: Lock::None as u32,
             server: server_id,
         };
-        log::debug!(
-            "Created a new JSON-RPC 2.0 server for static handlers with server_id: {}",
+        log::info!(
+            "Created a new Static JSON-RPC 2.0 server for static handlers with server_id: {}",
             server_id
         );
 
-        log::debug!("responding with static API service.",);
+        log::info!("responding with static API handler service.",);
         Ok(Response::new(CreateStaticHandlersResponse {
             handlers: vec![vm_static_api_service],
         }))

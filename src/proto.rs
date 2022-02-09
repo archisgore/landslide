@@ -61,6 +61,7 @@ use gresponsewriter::{writer_client::WriterClient, WriteRequest};
 use grr_plugin::GRpcBroker;
 use jsonrpc_core::IoHandler;
 use num_derive::FromPrimitive;
+use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
@@ -104,6 +105,62 @@ impl GHttpServer {
             grpc_broker,
             io_handler,
         })
+    }
+
+    // The Rust JSON-RPC request expects this:
+    // {
+    //      "jsonrpc": "2.0",
+    //      "method": "timestampvm.getBlock",
+    //      "params":[{
+    //          "id":"xqQV1jDnCXDxhfnNT7tDBcXeoH2jC3Hh7Pyv4GXE1z1hfup5K"
+    //      }],
+    //      "id": 1
+    // }
+    //
+    // However, all the avalanche examples use this:
+    //  {
+    //      "jsonrpc": "2.0",
+    //      "method": "timestampvm.getBlock",
+    //      "params":{
+    //          "id":"xqQV1jDnCXDxhfnNT7tDBcXeoH2jC3Hh7Pyv4GXE1z1hfup5K"
+    //      },
+    //      "id": 1
+    // }
+    //
+    // To point out the obvious - our current client expects params to be
+    // an array of structs: params: [{ <params go here> }]
+    // meanwhile, Avalanche examples expect params to just be a struct:
+    // just a struct: params: { <params go here> }
+    //
+    // This function wraps just-a-struct into an array-of-one-struct
+    // This function never fails. For any errors, it returns the original
+    // string as it was found. No judgement.
+    fn array_wrap_params(request_json: String) -> String {
+        let mut parsed_json: Value = match serde_json::from_str(request_json.as_str()) {
+            // if parsing failure, return original request
+            Err(_) => return request_json,
+            Ok(j) => j,
+        };
+
+        // wrap it in an array
+        match parsed_json.as_object_mut() {
+            None => return request_json,
+            Some(parsed_request) => {
+                if let Some(params) = parsed_request.get("params") {
+                    if !params.is_array() {
+                        // if params are not an array, make them one...
+                        if let Some(removed_params) = parsed_request.remove("params") {
+                            parsed_request.insert(
+                                "params".to_string(),
+                                serde_json::Value::Array(vec![removed_params]),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        parsed_json.to_string()
     }
 }
 
@@ -173,10 +230,12 @@ impl ghttp::http_server::Http for GHttpServer {
             .map_err(|e| e.into())
             .map_err(into_status)?;
 
-        log::info!("In GHttpClient, body: {}", body_str);
+        let body_str_array_wrapped_params = Self::array_wrap_params(body_str);
+
+        log::info!("In GHttpClient, body: {}", body_str_array_wrapped_params);
         let response = self
             .io_handler
-            .handle_request(body_str.as_str())
+            .handle_request(body_str_array_wrapped_params.as_str())
             .await
             .ok_or_else(|| Status::internal("no response from inner handler"))?;
 
@@ -193,5 +252,103 @@ impl ghttp::http_server::Http for GHttpServer {
 
         log::trace!("In GHttpClient, written response bytes {:?}", written_bytes);
         Ok(Response::new(HttpResponse {}))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use assert_json_diff::assert_json_eq;
+    use serde_json::json;
+
+    #[test]
+    fn test_array_wrap_params_simple() {
+        let unwrapped_json_str = json!({
+            "jsonrpc": "2.0",
+            "method": "timestampvm.getBlock",
+            "params":{
+                "id":"xqQV1jDnCXDxhfnNT7tDBcXeoH2jC3Hh7Pyv4GXE1z1hfup5K"
+            },
+            "id": 1
+        })
+        .to_string();
+
+        let wrapped_json_str = json!({
+            "jsonrpc": "2.0",
+            "method": "timestampvm.getBlock",
+            "params":[{
+                "id":"xqQV1jDnCXDxhfnNT7tDBcXeoH2jC3Hh7Pyv4GXE1z1hfup5K"
+            }],
+            "id": 1
+        })
+        .to_string();
+
+        let auto_wrapped_json_str = GHttpServer::array_wrap_params(unwrapped_json_str);
+
+        assert_json_eq!(auto_wrapped_json_str, wrapped_json_str);
+    }
+
+    #[test]
+    fn test_array_wrap_params_primitive_int() {
+        let unwrapped_json_str = json!({
+            "jsonrpc": "2.0",
+            "method": "timestampvm.getBlock",
+            "params": 5,
+            "id": 1
+        })
+        .to_string();
+
+        let wrapped_json_str = json!({
+            "jsonrpc": "2.0",
+            "method": "timestampvm.getBlock",
+            "params": [5],
+            "id": 1
+        })
+        .to_string();
+
+        let auto_wrapped_json_str = GHttpServer::array_wrap_params(unwrapped_json_str);
+
+        assert_json_eq!(auto_wrapped_json_str, wrapped_json_str);
+    }
+
+    #[test]
+    fn test_array_wrap_params_complex() {
+        let unwrapped_json_str = json!({
+            "jsonrpc": "2.0",
+            "method": "timestampvm.getBlock",
+            "params":{
+                "struct":{
+                    "foo": "bar"
+                },
+                "array": [
+                    "one",
+                    "two",
+                    "three"
+                ]
+            },
+            "id": 1
+        })
+        .to_string();
+
+        let wrapped_json_str = json!({
+            "jsonrpc": "2.0",
+            "method": "timestampvm.getBlock",
+            "params":[{
+                "struct":{
+                    "foo": "bar"
+                },
+                "array": [
+                    "one",
+                    "two",
+                    "three"
+                ]
+            }],
+            "id": 1
+        })
+        .to_string();
+
+        let auto_wrapped_json_str = GHttpServer::array_wrap_params(unwrapped_json_str);
+
+        assert_json_eq!(auto_wrapped_json_str, wrapped_json_str);
     }
 }
