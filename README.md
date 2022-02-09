@@ -34,3 +34,13 @@ The script will provide instructions on how to run landslide in avalanche.
 ```.bash
 ./scripts/run.sh $LANDSLIDE_BIN_PATH "$LANDSLIDE_GIT_ROOT/genesis.json"
 ```
+
+### Interact with it
+
+Once the VM is launched, all Avalanche's TimestampVM instructions work completely drop-in:
+https://docs.avax.network/build/tutorials/platform/subnets/create-a-virtual-machine-vm
+
+You might also want to read how to create a custom blockchain:
+https://docs.avax.network/build/tutorials/platform/subnets/create-custom-blockchain
+
+

@@ -24,6 +24,8 @@ pub enum LandslideError {
     FromHexError(#[from] hex::FromHexError),
     #[error("An error occurred when serializing/deserializing JSON: {0}")]
     SerdeJsonError(#[from] serde_json::Error),
+    #[error("An error occurred when creating a string from, what was assumed to be, a utf-8 sequence of bytes: {0}")]
+    FromUtf8(#[from] std::string::FromUtf8Error),
     #[error(transparent)]
     StdIoError(#[from] std::io::Error),
     #[error("Unable to set logger: {0}")]

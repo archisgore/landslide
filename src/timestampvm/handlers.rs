@@ -30,16 +30,16 @@ pub struct ProposeBlockReply {
 
 #[derive(Serialize, Deserialize)]
 pub struct GetBlockArgs {
-    id: Option<Vec<u8>>,
+    id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct GetBlockReply {
     timestamp: u64,
     data: String,
-    id: Vec<u8>,
+    id: String,
     #[serde(rename = "parentID")]
-    parent_id: Vec<u8>,
+    parent_id: String,
 }
 
 #[rpc(server)]
@@ -97,8 +97,8 @@ impl Handlers for HandlersImpl {
                 None => mutable_state.get_last_accepted_block_id().await
                     .map_err(into_jsonrpc_error)?
                     .ok_or_else(|| JsonRpcError::invalid_params("No Id parameter provided, and last accepted block id could not be retrieved"))?,
-                Some(idbytes) => {
-                    Id::from_slice(&idbytes)
+                Some(idstr) => {
+                    Id::from_slice(idstr.as_bytes())
                         .map_err(|e| JsonRpcError::invalid_params(format!("Unable to convert provided Id bytes into a valid Id: {}", e)))?
                 },
             };
@@ -119,9 +119,17 @@ impl Handlers for HandlersImpl {
                 .map_err(|e| e.into())
                 .map_err(into_jsonrpc_error)?;
 
+            let id_str = String::from_utf8(bid.to_vec())
+                .map_err(|e| e.into())
+                .map_err(into_jsonrpc_error)?;
+
+            let parent_id_str = String::from_utf8(block.parent_id().to_vec())
+                .map_err(|e| e.into())
+                .map_err(into_jsonrpc_error)?;
+
             Ok(GetBlockReply {
-                id: Vec::from(bid.as_ref()),
-                parent_id: Vec::from(block.parent_id().as_ref()),
+                id: id_str,
+                parent_id: parent_id_str,
                 data: encoded_data,
                 timestamp: timestamp_unix_u64,
             })

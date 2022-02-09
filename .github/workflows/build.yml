@@ -1,0 +1,26 @@
+name: Build Status
+
+on: [push, pull_request]
+
+jobs:
+  # Push image to GitHub Packages. No "testing" because this is a heavy image
+  # See also https://docs.docker.com/docker-hub/builds/
+  build:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Style (rustfmt)
+        run: docker run -v cargo-cache:/root/.cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo fmt --all -- --check
+
+      - name: Lint (Clippy)
+        run: docker run -v cargo-cache:/root/.cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Build
+        run: docker run -v cargo-cache:/root/.cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo build-all-features --workspace
+
+      - name: Test
+        run: docker run -v cargo-cache:/root/.cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo test-all-features --workspace
+
+

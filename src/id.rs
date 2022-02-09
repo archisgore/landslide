@@ -32,6 +32,9 @@ impl Id {
     }
 
     pub fn from_slice(slice: &[u8]) -> Result<Id, LandslideError> {
+        if slice.len() != BYTE_LENGTH {
+            return Err(LandslideError::Other(anyhow!("Unable to convert a slice of bytes of length {} into an Id which expects a length of {} bytes", slice.len(), BYTE_LENGTH)));
+        }
         let bytes: [u8; BYTE_LENGTH] = slice.try_into()?;
         Ok(Id::new(bytes))
     }

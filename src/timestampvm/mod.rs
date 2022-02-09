@@ -49,7 +49,7 @@ use super::proto::gkeystore::keystore_client::*;
 
 use super::proto::galiasreader::alias_reader_client::*;
 
-const STATIC_HANDLERS_SERVICE_ID: ServiceId = 5;
+const STATIC_HANDLERS_SERVICE_ID: ServiceId = 1;
 const VM_API_HANDLERS_SERVICE_ID: ServiceId = 2;
 
 // Copied from: https://github.com/ava-labs/avalanchego/blob/master/snow/engine/common/http_handler.go#L11
