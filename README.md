@@ -29,12 +29,12 @@ The script will provide instructions on how to run landslide in avalanche.
 
 ### Test with [ava-sim](https://github.com/ava-labs/ava-sim)
 
-1. Export path to landslide git repository root, in the environment variable LANDSLIDE_GIT_ROOT
+1. Export path to landslide genesis data file, in the environment variable LANDSLIDE_GENESIS_PATH
 2. Export path to landslide executable in the environment variable LANDSLIDE_BIN_PATH
 2. Clone https://github.com/ava-labs/ava-sim and go in the directory.
 3. In ava-sim root, run:
 ```.bash
-./scripts/run.sh $LANDSLIDE_BIN_PATH "$LANDSLIDE_GIT_ROOT/genesis.json"
+./scripts/run.sh $LANDSLIDE_BIN_PATH "$LANDSLIDE_GENESIS_PATH"
 ```
 
 ### Interact with it
