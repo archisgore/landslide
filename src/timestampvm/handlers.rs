@@ -98,7 +98,10 @@ impl Handlers for HandlersImpl {
                     .map_err(into_jsonrpc_error)?
                     .ok_or_else(|| JsonRpcError::invalid_params("No Id parameter provided, and last accepted block id could not be retrieved"))?,
                 Some(idstr) => {
-                    Id::from_slice(idstr.as_bytes())
+                    let decoded_idbytes = Encoding::Cb58.decode(idstr, Checksum::Yes)
+                        .map_err(into_jsonrpc_error)?;
+
+                    Id::from_slice(decoded_idbytes.as_ref())
                         .map_err(|e| JsonRpcError::invalid_params(format!("Unable to convert provided Id bytes into a valid Id: {}", e)))?
                 },
             };
@@ -119,12 +122,12 @@ impl Handlers for HandlersImpl {
                 .map_err(|e| e.into())
                 .map_err(into_jsonrpc_error)?;
 
-            let id_str = String::from_utf8(bid.to_vec())
-                .map_err(|e| e.into())
+            let id_str = Encoding::Cb58
+                .encode(bid.as_ref(), Checksum::Yes)
                 .map_err(into_jsonrpc_error)?;
 
-            let parent_id_str = String::from_utf8(block.parent_id().to_vec())
-                .map_err(|e| e.into())
+            let parent_id_str = Encoding::Cb58
+                .encode(block.parent_id().as_ref(), Checksum::Yes)
                 .map_err(into_jsonrpc_error)?;
 
             Ok(GetBlockReply {
