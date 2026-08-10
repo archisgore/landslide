@@ -1,3 +1,5 @@
+
+
 [![Build Status](https://github.com/archisgore/landslide/actions/workflows/build.yml/badge.svg)](https://github.com/archisgore/landslide/actions/workflows/build.yml)
 
 # A rust-based Custom VM for Avalanche Subnets
@@ -31,8 +33,8 @@ The script will provide instructions on how to run landslide in avalanche.
 
 1. Export path to landslide genesis data file, in the environment variable LANDSLIDE_GENESIS_PATH
 2. Export path to landslide executable in the environment variable LANDSLIDE_BIN_PATH
-2. Clone https://github.com/ava-labs/ava-sim and go in the directory.
-3. In ava-sim root, run:
+3. Clone https://github.com/ava-labs/ava-sim and go in the directory.
+4. In ava-sim root, run:
 ```.bash
 ./scripts/run.sh $LANDSLIDE_BIN_PATH "$LANDSLIDE_GENESIS_PATH"
 ```
@@ -44,5 +46,3 @@ https://docs.avax.network/build/tutorials/platform/subnets/create-a-virtual-mach
 
 You might also want to read how to create a custom blockchain:
 https://docs.avax.network/build/tutorials/platform/subnets/create-custom-blockchain
-
-
