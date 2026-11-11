@@ -26,5 +26,5 @@ echo "  3. Go into the ava-sim directory:"
 echo "        cd ava-sim"
 echo
 echo "  4. Build and run ava-sim with the custom VM"
-echo "        ./scripts/build.sh && ./scripts/run.sh \$LANDSLIDE_BIN_PATH \"\$LANDSLIDE_GIT_ROOT/genesis.data\""
+echo "        ./scripts/build.sh && ./scripts/run.sh \$LANDSLIDE_BIN_PATH \"\$LANDSLIDE_GIT_ROOT/src/timestampvm/genesis.data\""
 echo ""

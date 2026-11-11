@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -ex
 
 type wget >/dev/null 2>&1 || { echo >&2 "This requires the wget command to download the protobuf file"; exit 1; }
