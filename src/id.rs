@@ -6,16 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::str::FromStr;
-use zerocopy::{AsBytes, FromBytes, Unaligned};
 
 pub const BYTE_LENGTH: usize = 32;
 const BITS_PER_BYTE: usize = 8;
 
 pub const ROOT_PARENT_ID: Id = Id([0; BYTE_LENGTH]);
 
-#[derive(
-    Debug, Serialize, Deserialize, AsBytes, FromBytes, Unaligned, Hash, PartialEq, Eq, Clone,
-)]
+#[derive(Debug, Serialize, Deserialize, Hash, PartialEq, Eq, Clone)]
 #[repr(transparent)]
 pub struct Id([u8; BYTE_LENGTH]);
 

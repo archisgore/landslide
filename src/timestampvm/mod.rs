@@ -21,16 +21,15 @@ use anyhow::{anyhow, Context as AnyhowContext, Result};
 use grr_plugin::GRpcBroker;
 use grr_plugin::ServiceId;
 use grr_plugin::Status;
-use hyper::{Body, Request as HyperRequest, Response as HyperResponse};
 use std::collections::HashMap;
-use std::error::Error as StdError;
+use std::convert::Infallible;
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tonic::body::BoxBody;
+use tonic::body::Body;
+use tonic::server::NamedService;
 use tonic::transport::Channel;
-use tonic::transport::NamedService;
 use tower::Service;
 
 use super::proto::appsender::app_sender_client::*;
@@ -179,8 +178,7 @@ impl TimestampVmInterior {
             "opening a new connection to host for service_id: {}",
             service_id
         );
-        Ok(self
-            .grpc_broker
+        self.grpc_broker
             .lock()
             .await
             .dial_to_host_service(service_id)
@@ -192,7 +190,7 @@ impl TimestampVmInterior {
                 )
             })
             .map_err(|e| e.into())
-            .map_err(into_status)?)
+            .map_err(into_status)
     }
 
     pub async fn new_grpc_server<S>(
@@ -201,13 +199,13 @@ impl TimestampVmInterior {
         server: S,
     ) -> Result<ServiceId, Status>
     where
-        S: Service<HyperRequest<Body>, Response = HyperResponse<BoxBody>>
+        S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>
             + NamedService
             + Clone
             + Send
+            + Sync
             + 'static,
-        <S as Service<HyperRequest<Body>>>::Future: Send + 'static,
-        <S as Service<HyperRequest<Body>>>::Error: Into<Box<dyn StdError + Send + Sync>> + Send,
+        S::Future: Send + 'static,
     {
         log::trace!("Opening a new gRPC server through the grpc broker...");
         self.grpc_broker
@@ -470,7 +468,7 @@ impl Vm for TimestampVm {
             if versioned_db_clients.is_empty() {
                 return Err(Status::unknown("zero versioned_db_clients were found. Unable to proceed without a versioned database."));
             }
-            if let Some(db_client) = versioned_db_clients.values().rev().next() {
+            if let Some(db_client) = versioned_db_clients.values().next_back() {
                 log::info!("Initialized state for this VM");
                 let state = State::new(db_client.clone());
                 writable_interior.state = Some(state);

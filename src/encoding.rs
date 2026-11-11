@@ -5,7 +5,7 @@ use hmac_sha256::Hash;
 use num_derive::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
-const I32_MAX: usize = std::i32::MAX as usize;
+const I32_MAX: usize = i32::MAX as usize;
 
 const HEX_PREFIX: &str = "0x";
 const CHECKSUM_LEN: usize = 4;

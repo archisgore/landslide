@@ -207,7 +207,7 @@ impl ghttp::http_server::Http for GHttpServer {
             .read(ReadRequest {
                 // Should be isize::MAX, but the length field is i32, so we'll take the max allowable length
                 // https://doc.rust-lang.org/stable/reference/types/numeric.html#machine-dependent-integer-types
-                length: std::i32::MAX,
+                length: i32::MAX,
             })
             .await?
             .into_inner();

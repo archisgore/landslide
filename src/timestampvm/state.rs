@@ -8,8 +8,7 @@ use crate::proto::DatabaseError;
 use anyhow::{anyhow, Context, Result};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use bytes::BufMut;
-use lazy_static::lazy_static;
-use num::FromPrimitive;
+use num_traits::FromPrimitive;
 use serde::{
     de::{Deserializer, Error},
     ser::Serializer,
@@ -17,6 +16,7 @@ use serde::{
 };
 use std::convert::AsRef;
 use std::io::Cursor;
+use std::sync::LazyLock;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 use tonic::transport::Channel;
 use tonic::Response;
@@ -33,6 +33,21 @@ const SINGLETON_STATE_PREFIX: &[u8] = b"singleton";
 // Golang's Zero time is January 1, year 1, 00:00:00.000000000 UTC
 // https://cs.opensource.google/go/go/+/refs/tags/go1.17.6:src/time/time.go;l=97
 const GOLANG_ZERO_DATETIME_STR: &str = "0001-01-01T00:00:00Z";
+
+// Golang's Zero time (see above) as absolute nanoseconds from the Unix Epoch,
+// parsed once for future use.
+static GOLANG_ZERO_DATETIME_NANOS_ABS: LazyLock<i128> = LazyLock::new(|| {
+    OffsetDateTime::parse(GOLANG_ZERO_DATETIME_STR, &Rfc3339)
+        .with_context(|| {
+            format!(
+                "Unable to parse Golang's Zero DateTime, {}, into a rust OffsetDateTime",
+                GOLANG_ZERO_DATETIME_STR
+            )
+        })
+        .unwrap()
+        .unix_timestamp_nanos()
+        .abs()
+});
 
 pub const BLOCK_DATA_LEN: usize = 32;
 
@@ -423,14 +438,6 @@ impl Timestamp {
     }
 
     fn nanos_from_golang_zero(nanos: i128) -> i128 {
-        lazy_static! {
-            // Golang's Zero time is January 1, year 1, 00:00:00.000000000 UTC
-            // https://cs.opensource.google/go/go/+/refs/tags/go1.17.6:src/time/time.go;l=97
-            // init that as an OffsetDateTime for future use
-            static ref GOLANG_ZERO_DATETIME_NANOS_ABS: i128 = OffsetDateTime::parse(GOLANG_ZERO_DATETIME_STR, &Rfc3339)
-                .with_context(|| format!("Unable to parse Golang's Zero DateTime, {}, into a rust OffsetDateTime", GOLANG_ZERO_DATETIME_STR)).unwrap().unix_timestamp_nanos().abs();
-        }
-
         // Here's the logic.
         // 1. Incoming nanos are against a Unix Epoch of 0.
         // 2. Suppose Golang epoch is -10 compared to Unix Epoch.
@@ -445,14 +452,6 @@ impl Timestamp {
     }
 
     fn nanos_from_unix_epoch(nanos: i128) -> i128 {
-        lazy_static! {
-            // Golang's Zero time is January 1, year 1, 00:00:00.000000000 UTC
-            // https://cs.opensource.google/go/go/+/refs/tags/go1.17.6:src/time/time.go;l=97
-            // init that as an OffsetDateTime for future use
-            static ref GOLANG_ZERO_DATETIME_NANOS_ABS: i128 = OffsetDateTime::parse(GOLANG_ZERO_DATETIME_STR, &Rfc3339)
-                .with_context(|| format!("Unable to parse Golang's Zero DateTime, {}, into a rust OffsetDateTime", GOLANG_ZERO_DATETIME_STR)).unwrap().unix_timestamp_nanos().abs();
-        }
-
         // Here's the logic.
         // 1. Incoming nanos are against a Golang Epoch of 0.
         // 2. Suppose Unix epoch is +10 compared to Golang Epoch.

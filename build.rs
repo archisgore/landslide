@@ -1,16 +1,14 @@
 // Build the VM's protobuf into a Rust server
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The servers we'll expose
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_client(false)
-        .format(true)
-        .compile(&["proto/vm.proto", "proto/ghttp.proto"], &["proto"])?;
+        .compile_protos(&["proto/vm.proto", "proto/ghttp.proto"], &["proto"])?;
 
     // the clients we'll consume
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(false)
-        .format(true)
-        .compile(
+        .compile_protos(
             &[
                 "proto/appsender.proto",
                 "proto/galiasreader.proto",

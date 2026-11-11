@@ -2,7 +2,7 @@ use crate::encoding;
 use encoding::{Checksum, Encoding};
 use jsonrpc_core::{BoxFuture, Error as JsonRpcError, IoHandler, Result};
 use jsonrpc_derive::rpc;
-use num::FromPrimitive;
+use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 
 pub fn new() -> IoHandler {
