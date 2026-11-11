@@ -41,3 +41,8 @@ jobs:
           docker run -v $HOME/.cargo-ci/registry:/opt/cargo/registry -v $PWD:/volume --rm ghcr.io/archisgore/rust-dev-env:latest \
             sh -c 'cargo build --quiet && bin=$(find target -path "*/debug/landslide" -type f | head -n1) && (VM_PLUGIN=dynamic timeout 10 "$bin" 2>/dev/null; true)' | tee handshake.txt
           grep -Eq '^1\|9\|unix\|/.+\|grpc\|$' handshake.txt
+
+      # The container runs as root; make the cache dir readable so actions/cache can save it.
+      - name: Fix cargo cache ownership
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$HOME/.cargo-ci"
