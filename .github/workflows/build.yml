@@ -16,20 +16,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Cache cargo registry
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo-ci/registry
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
       - name: Style (rustfmt)
-        run: docker run -v cargo-cache:/root/.cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo fmt --all -- --check
+        run: docker run -v $HOME/.cargo-ci/registry:/opt/cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo fmt --all -- --check
 
       - name: Lint (Clippy)
-        run: docker run -v cargo-cache:/root/.cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo clippy --all-targets --all-features -- -D warnings
+        run: docker run -v $HOME/.cargo-ci/registry:/opt/cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build
-        run: docker run -v cargo-cache:/root/.cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo build-all-features
+        run: docker run -v $HOME/.cargo-ci/registry:/opt/cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo build-all-features
 
       - name: Test
-        run: docker run -v cargo-cache:/root/.cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo test-all-features
+        run: docker run -v $HOME/.cargo-ci/registry:/opt/cargo/registry -v $PWD:/volume --rm -t ghcr.io/archisgore/rust-dev-env:latest cargo test-all-features
 
       - name: Smoke test (go-plugin handshake)
         run: |
-          docker run -v cargo-cache:/root/.cargo/registry -v $PWD:/volume --rm ghcr.io/archisgore/rust-dev-env:latest \
+          docker run -v $HOME/.cargo-ci/registry:/opt/cargo/registry -v $PWD:/volume --rm ghcr.io/archisgore/rust-dev-env:latest \
             sh -c 'cargo build --quiet && bin=$(find target -path "*/debug/landslide" -type f | head -n1) && (VM_PLUGIN=dynamic timeout 10 "$bin" 2>/dev/null; true)' | tee handshake.txt
           grep -Eq '^1\|9\|unix\|/.+\|grpc\|$' handshake.txt
